@@ -1,0 +1,1616 @@
+# IWANNA - PHASE 1C: WANNA CREATION & AI INTENT PARSING
+
+## Context & Scope
+
+Phase 1B (Authentication) is complete. Users can now create anonymous accounts, save recovery phrases, and authenticate securely.
+
+**Phase 1C Goal:** Build the core "wanna" creation experience - the heart of Iwanna. Users express what they want to do right now, AI parses their intent, and the system prepares for matching.
+
+**Critical MVP Focus:** We are ONLY building for **social connection pods** (18+ users wanting to meet 2-4 others nearby). No solo wannas, no affiliate links, no monetization yet.
+
+---
+
+## 🎯 Product Vision for Wanna Creation
+
+### The Emotional Core:
+**"What do you wanna do right now?"**
+
+This single question is Iwanna's entire interface. It should feel:
+- **Inviting** - Open-ended, curious, warm
+- **Immediate** - Right now energy, not planning
+- **Alive** - The interface breathes and responds
+- **Judgment-free** - Any answer feels valid
+
+### User Experience Flow:
+
+```
+User authenticated → Home screen appears
+  ↓
+"What do you wanna do?" (breathing input field)
+  ↓
+User types: "I wanna grab coffee"
+  ↓
+Optional: Select mood emoji (😎 🤩 🧠 💬 🎨)
+  ↓
+Tap "Find your vibe" (pulsing button)
+  ↓
+AI processing (ambient glow animation)
+  ↓
+Intent parsed, location captured, wanna saved
+  ↓
+Queue for matching (next phase)
+```
+
+---
+
+## 📊 Database Schema
+
+### Wannas Table
+
+```sql
+CREATE TABLE wannas (
+  -- Core identity
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  
+  -- User input
+  raw_input TEXT NOT NULL CHECK (length(raw_input) >= 3 AND length(raw_input) <= 200),
+  mood_emoji VARCHAR(10),  -- Optional mood selector
+  
+  -- AI-parsed intent
+  intent JSONB NOT NULL,   -- Structured data from AI parsing
+  embedding VECTOR(1536),  -- Semantic embedding for similarity matching
+  
+  -- Location data
+  location GEOGRAPHY(POINT) NOT NULL,
+  location_accuracy FLOAT,
+  location_name VARCHAR(255),  -- Reverse geocoded place name
+  
+  -- Metadata
+  status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('active', 'matching', 'matched', 'expired', 'cancelled')),
+  priority INTEGER DEFAULT 0,  -- For future ranking
+  
+  -- Timestamps
+  created_at TIMESTAMP DEFAULT NOW(),
+  expires_at TIMESTAMP DEFAULT (NOW() + INTERVAL '6 hours'),
+  matched_at TIMESTAMP,
+  cancelled_at TIMESTAMP,
+  
+  -- Constraints
+  CONSTRAINT valid_expiry CHECK (expires_at > created_at)
+);
+
+-- Indexes for performance
+CREATE INDEX idx_wannas_user ON wannas(user_id);
+CREATE INDEX idx_wannas_status ON wannas(status) WHERE status = 'active';
+CREATE INDEX idx_wannas_location ON wannas USING GIST(location) WHERE status = 'active';
+CREATE INDEX idx_wannas_created ON wannas(created_at DESC);
+CREATE INDEX idx_wannas_expires ON wannas(expires_at) WHERE status = 'active';
+
+-- Vector index for semantic similarity (requires pgvector extension)
+CREATE INDEX idx_wannas_embedding ON wannas USING ivfflat (embedding vector_cosine_ops)
+  WITH (lists = 100) WHERE status = 'active';
+```
+
+### Intent JSONB Structure
+
+```typescript
+interface Intent {
+  // What they want to do
+  activity: string;                    // e.g., "coffee", "hiking", "brainstorming"
+  category: string;                    // e.g., "food_social", "outdoors", "creative"
+  
+  // Social context
+  energy_level: 'low' | 'medium' | 'high';
+  social_preference: 'intimate' | 'small_group' | 'open';
+  
+  // Timing
+  time_sensitivity: 'now' | 'today' | 'flexible';
+  duration_estimate: number;           // Minutes (e.g., 60, 120, 180)
+  
+  // Location flexibility
+  location_flexibility: 'specific' | 'neighborhood' | 'city_wide';
+  venue_type?: string;                 // e.g., "cafe", "park", "bar"
+  
+  // Extracted keywords for matching
+  keywords: string[];                  // e.g., ["coffee", "casual", "conversation"]
+  
+  // Emotional tone
+  emotional_tone: string;              // e.g., "curious", "energetic", "relaxed"
+  
+  // AI confidence
+  confidence: number;                  // 0-1 score
+}
+```
+
+---
+
+## 🤖 AI Integration (OpenAI)
+
+### Environment Variables
+
+```bash
+# Add to backend .env
+OPENAI_API_KEY=sk-your-openai-api-key-here
+OPENAI_MODEL=gpt-4o-mini  # Cost-effective, fast
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+```
+
+### Intent Parsing Service
+
+```typescript
+// services/aiService.ts
+
+import OpenAI from 'openai';
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+interface ParseIntentResult {
+  intent: Intent;
+  embedding: number[];
+}
+
+class AIService {
+  /**
+   * Parse user's wanna text into structured intent
+   */
+  async parseIntent(
+    rawInput: string,
+    moodEmoji?: string,
+    locationContext?: { city: string; neighborhood: string }
+  ): Promise<ParseIntentResult> {
+    // Build context-aware prompt
+    const systemPrompt = `You are an intent parser for Iwanna, a social connection app.
+Users express what they want to do right now to meet 2-4 people nearby.
+
+Parse their input into structured JSON with these fields:
+- activity: Main activity (lowercase, 1-3 words)
+- category: One of: food_social, outdoors, creative, sports, conversation, entertainment, nightlife
+- energy_level: low, medium, or high
+- social_preference: intimate (2-3 people), small_group (3-5), open (flexible)
+- time_sensitivity: now (within 1-2 hours), today (within 6 hours), flexible
+- duration_estimate: Estimated minutes (30, 60, 90, 120, 180, 240)
+- location_flexibility: specific (exact venue), neighborhood (within 1 mile), city_wide (anywhere)
+- venue_type: Type of place if clear (cafe, bar, park, restaurant, gym, etc.)
+- keywords: Array of 3-7 relevant matching keywords
+- emotional_tone: One word describing the vibe (curious, energetic, relaxed, adventurous, etc.)
+- confidence: 0-1 score of how confident you are in this parsing
+
+Be conversational and natural. Interpret casual language. Default to medium energy and small_group if unclear.`;
+
+    const userPrompt = `Input: "${rawInput}"
+${moodEmoji ? `Mood: ${moodEmoji}` : ''}
+${locationContext ? `Location context: ${locationContext.neighborhood}, ${locationContext.city}` : ''}
+
+Parse this into structured intent JSON.`;
+
+    try {
+      const completion = await openai.chat.completions.create({
+        model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ],
+        response_format: { type: 'json_object' },
+        temperature: 0.3,
+      });
+
+      const intentData = JSON.parse(completion.choices[0].message.content || '{}');
+
+      // Generate embedding for semantic matching
+      const embedding = await this.generateEmbedding(rawInput);
+
+      return {
+        intent: intentData as Intent,
+        embedding,
+      };
+    } catch (error) {
+      console.error('AI parsing error:', error);
+      
+      // Fallback to basic parsing if AI fails
+      return this.basicFallbackParsing(rawInput, moodEmoji);
+    }
+  }
+
+  /**
+   * Generate semantic embedding for similarity matching
+   */
+  async generateEmbedding(text: string): Promise<number[]> {
+    try {
+      const response = await openai.embeddings.create({
+        model: process.env.OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small',
+        input: text,
+        dimensions: 1536,
+      });
+
+      return response.data[0].embedding;
+    } catch (error) {
+      console.error('Embedding generation error:', error);
+      // Return zero vector as fallback
+      return new Array(1536).fill(0);
+    }
+  }
+
+  /**
+   * Fallback parsing if AI fails (keyword-based)
+   */
+  private basicFallbackParsing(
+    rawInput: string,
+    moodEmoji?: string
+  ): ParseIntentResult {
+    const lower = rawInput.toLowerCase();
+    
+    // Simple keyword detection
+    let activity = 'hang out';
+    let category = 'conversation';
+    let venue_type = undefined;
+    
+    if (lower.includes('coffee') || lower.includes('cafe')) {
+      activity = 'coffee';
+      category = 'food_social';
+      venue_type = 'cafe';
+    } else if (lower.includes('drink') || lower.includes('bar')) {
+      activity = 'drinks';
+      category = 'nightlife';
+      venue_type = 'bar';
+    } else if (lower.includes('food') || lower.includes('eat')) {
+      activity = 'food';
+      category = 'food_social';
+      venue_type = 'restaurant';
+    } else if (lower.includes('walk') || lower.includes('hike')) {
+      activity = 'walk';
+      category = 'outdoors';
+      venue_type = 'park';
+    } else if (lower.includes('work') || lower.includes('study')) {
+      activity = 'cowork';
+      category = 'conversation';
+      venue_type = 'cafe';
+    }
+
+    const keywords = rawInput
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(word => word.length > 3);
+
+    const intent: Intent = {
+      activity,
+      category,
+      energy_level: 'medium',
+      social_preference: 'small_group',
+      time_sensitivity: 'now',
+      duration_estimate: 120,
+      location_flexibility: 'neighborhood',
+      venue_type,
+      keywords: keywords.slice(0, 7),
+      emotional_tone: 'curious',
+      confidence: 0.5, // Low confidence for fallback
+    };
+
+    return {
+      intent,
+      embedding: new Array(1536).fill(0), // Zero vector
+    };
+  }
+
+  /**
+   * Get suggestions for similar wannas (for UI autocomplete)
+   */
+  async getSuggestions(partialInput: string): Promise<string[]> {
+    const commonWannas = [
+      'I wanna grab coffee and chat',
+      'I wanna go for a walk',
+      'I wanna grab drinks',
+      'I wanna explore the city',
+      'I wanna brainstorm startup ideas',
+      'I wanna play basketball',
+      'I wanna try a new restaurant',
+      'I wanna study together',
+      'I wanna go to a museum',
+      'I wanna watch the sunset',
+    ];
+
+    // Simple filter for MVP
+    return commonWannas
+      .filter(w => w.toLowerCase().includes(partialInput.toLowerCase()))
+      .slice(0, 5);
+  }
+}
+
+export const aiService = new AIService();
+```
+
+---
+
+## 🗺️ Location Service
+
+### Reverse Geocoding
+
+```typescript
+// services/locationService.ts
+
+import axios from 'axios';
+
+interface LocationContext {
+  city: string;
+  neighborhood: string;
+  country: string;
+  formatted: string;
+}
+
+class LocationService {
+  /**
+   * Reverse geocode coordinates to human-readable location
+   * Using OpenStreetMap Nominatim (free, no API key needed)
+   */
+  async reverseGeocode(
+    latitude: number,
+    longitude: number
+  ): Promise<LocationContext | null> {
+    try {
+      const response = await axios.get(
+        'https://nominatim.openstreetmap.org/reverse',
+        {
+          params: {
+            lat: latitude,
+            lon: longitude,
+            format: 'json',
+            addressdetails: 1,
+          },
+          headers: {
+            'User-Agent': 'Iwanna/1.0', // Required by Nominatim
+          },
+        }
+      );
+
+      const data = response.data;
+      const address = data.address || {};
+
+      return {
+        city: address.city || address.town || address.village || 'Unknown',
+        neighborhood: address.neighbourhood || address.suburb || address.city_district || '',
+        country: address.country || '',
+        formatted: data.display_name || '',
+      };
+    } catch (error) {
+      console.error('Reverse geocoding error:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Calculate if location is within a reasonable area for the app
+   * (Basic spam prevention - wannas should be from real locations)
+   */
+  isValidLocation(latitude: number, longitude: number): boolean {
+    // Check if coordinates are within valid ranges
+    if (latitude < -90 || latitude > 90) return false;
+    if (longitude < -180 || longitude > 180) return false;
+    
+    // Check if not null island (0, 0)
+    if (latitude === 0 && longitude === 0) return false;
+    
+    return true;
+  }
+}
+
+export const locationService = new LocationService();
+```
+
+---
+
+## 🔧 Wanna Service
+
+```typescript
+// services/wannaService.ts
+
+import { v4 as uuidv4 } from 'uuid';
+import { db } from '../config/database';
+import { redis } from '../config/redis';
+import { aiService } from './aiService';
+import { locationService } from './locationService';
+
+interface CreateWannaInput {
+  userId: string;
+  rawInput: string;
+  moodEmoji?: string;
+  location: {
+    latitude: number;
+    longitude: number;
+    accuracy: number;
+  };
+}
+
+interface CreateWannaResult {
+  wannaId: string;
+  intent: Intent;
+  locationName: string;
+  expiresAt: Date;
+}
+
+class WannaService {
+  /**
+   * Create a new wanna
+   */
+  async createWanna(input: CreateWannaInput): Promise<CreateWannaResult> {
+    const { userId, rawInput, moodEmoji, location } = input;
+
+    // Validate location
+    if (!locationService.isValidLocation(location.latitude, location.longitude)) {
+      throw new Error('Invalid location coordinates');
+    }
+
+    // Get location context
+    const locationContext = await locationService.reverseGeocode(
+      location.latitude,
+      location.longitude
+    );
+
+    // Parse intent with AI
+    const { intent, embedding } = await aiService.parseIntent(
+      rawInput,
+      moodEmoji,
+      locationContext || undefined
+    );
+
+    // Create wanna record
+    const wannaId = uuidv4();
+    const expiresAt = new Date(Date.now() + 6 * 60 * 60 * 1000); // 6 hours
+
+    const wanna = await db.wannas.create({
+      id: wannaId,
+      user_id: userId,
+      raw_input: rawInput,
+      mood_emoji: moodEmoji,
+      intent: intent,
+      embedding: embedding,
+      location: `POINT(${location.longitude} ${location.latitude})`,
+      location_accuracy: location.accuracy,
+      location_name: locationContext?.formatted || 'Unknown location',
+      status: 'active',
+      expires_at: expiresAt,
+    });
+
+    // Cache for quick matching (Redis)
+    await redis.setex(
+      `wanna:${wannaId}`,
+      21600, // 6 hours
+      JSON.stringify({
+        id: wannaId,
+        user_id: userId,
+        intent,
+        location: {
+          lat: location.latitude,
+          lng: location.longitude,
+        },
+        created_at: Date.now(),
+      })
+    );
+
+    // Add to geospatial index for proximity search
+    await redis.geoadd(
+      'active_wannas',
+      location.longitude,
+      location.latitude,
+      wannaId
+    );
+
+    // Increment user's wanna count (for rate limiting)
+    await db.users.increment('wannas_today', { where: { id: userId } });
+    await db.users.increment('wannas_created_count', { where: { id: userId } });
+    await db.users.update(
+      { last_wanna_at: new Date() },
+      { where: { id: userId } }
+    );
+
+    // Queue for matching (will implement in Phase 1D)
+    await this.queueForMatching(wannaId);
+
+    return {
+      wannaId,
+      intent,
+      locationName: locationContext?.city || 'your area',
+      expiresAt,
+    };
+  }
+
+  /**
+   * Cancel a wanna
+   */
+  async cancelWanna(wannaId: string, userId: string): Promise<void> {
+    const wanna = await db.wannas.findOne({
+      where: {
+        id: wannaId,
+        user_id: userId,
+      },
+    });
+
+    if (!wanna) {
+      throw new Error('Wanna not found');
+    }
+
+    if (wanna.status !== 'active') {
+      throw new Error('Wanna cannot be cancelled');
+    }
+
+    await wanna.update({
+      status: 'cancelled',
+      cancelled_at: new Date(),
+    });
+
+    // Remove from Redis caches
+    await redis.del(`wanna:${wannaId}`);
+    await redis.zrem('active_wannas', wannaId);
+  }
+
+  /**
+   * Get user's active wannas
+   */
+  async getUserActiveWannas(userId: string) {
+    return await db.wannas.findAll({
+      where: {
+        user_id: userId,
+        status: 'active',
+      },
+      order: [['created_at', 'DESC']],
+    });
+  }
+
+  /**
+   * Queue wanna for matching (placeholder for Phase 1D)
+   */
+  private async queueForMatching(wannaId: string): Promise<void> {
+    // Add to matching queue (will be processed by matching worker in Phase 1D)
+    await redis.lpush('matching_queue', wannaId);
+    
+    console.log(`[Wanna ${wannaId}] Queued for matching`);
+  }
+
+  /**
+   * Clean up expired wannas (cron job)
+   */
+  async cleanupExpiredWannas(): Promise<number> {
+    const expired = await db.wannas.update(
+      { status: 'expired' },
+      {
+        where: {
+          status: 'active',
+          expires_at: { $lt: new Date() },
+        },
+      }
+    );
+
+    return expired[0]; // Number of rows updated
+  }
+}
+
+export const wannaService = new WannaService();
+```
+
+---
+
+## 📡 API Routes
+
+```typescript
+// routes/wannas.ts
+
+import express from 'express';
+import { z } from 'zod';
+import { wannaService } from '../services/wannaService';
+import { authService } from '../services/authService';
+import { authenticateToken } from '../middleware/authenticate';
+
+const router = express.Router();
+
+// Validation schemas
+const createWannaSchema = z.object({
+  text: z.string()
+    .min(3, 'Tell us a bit more about what you wanna do')
+    .max(200, 'Keep it short and sweet (under 200 characters)'),
+  moodEmoji: z.string().optional(),
+  location: z.object({
+    latitude: z.number().min(-90).max(90),
+    longitude: z.number().min(-180).max(180),
+    accuracy: z.number().positive(),
+  }),
+});
+
+/**
+ * POST /api/v1/wannas
+ * Create a new wanna
+ */
+router.post('/', authenticateToken, async (req, res, next) => {
+  try {
+    // Validate input
+    const data = createWannaSchema.parse(req.body);
+
+    // Check rate limit
+    const rateLimit = await authService.checkRateLimit(req.userId!);
+    
+    if (!rateLimit.allowed) {
+      return res.status(429).json({
+        error: 'Rate limit reached',
+        message: `You've reached your daily limit. ${
+          req.user.account_tier === 'anonymous' 
+            ? 'Upgrade your account to create more wannas!' 
+            : 'Try again tomorrow!'
+        }`,
+        remaining: 0,
+        accountTier: req.user.account_tier,
+      });
+    }
+
+    // Create wanna
+    const result = await wannaService.createWanna({
+      userId: req.userId!,
+      rawInput: data.text,
+      moodEmoji: data.moodEmoji,
+      location: data.location,
+    });
+
+    // Increment rate limit counter
+    await authService.incrementWannaCount(req.userId!);
+
+    res.status(201).json({
+      success: true,
+      wanna: {
+        id: result.wannaId,
+        intent: result.intent,
+        locationName: result.locationName,
+        expiresAt: result.expiresAt,
+        remaining: rateLimit.remaining - 1,
+      },
+      message: `Finding your vibe in ${result.locationName}...`,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/v1/wannas/active
+ * Get user's active wannas
+ */
+router.get('/active', authenticateToken, async (req, res, next) => {
+  try {
+    const wannas = await wannaService.getUserActiveWannas(req.userId!);
+
+    res.json({
+      success: true,
+      wannas: wannas.map(w => ({
+        id: w.id,
+        text: w.raw_input,
+        moodEmoji: w.mood_emoji,
+        intent: w.intent,
+        locationName: w.location_name,
+        status: w.status,
+        createdAt: w.created_at,
+        expiresAt: w.expires_at,
+      })),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * DELETE /api/v1/wannas/:id
+ * Cancel a wanna
+ */
+router.delete('/:id', authenticateToken, async (req, res, next) => {
+  try {
+    await wannaService.cancelWanna(req.params.id, req.userId!);
+
+    res.json({
+      success: true,
+      message: 'Wanna cancelled',
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/v1/wannas/suggestions
+ * Get autocomplete suggestions
+ */
+router.get('/suggestions', authenticateToken, async (req, res, next) => {
+  try {
+    const { query } = req.query;
+    
+    if (!query || typeof query !== 'string') {
+      return res.json({ suggestions: [] });
+    }
+
+    const suggestions = await aiService.getSuggestions(query);
+
+    res.json({
+      success: true,
+      suggestions,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+export default router;
+```
+
+### Add to Routes Index
+
+```typescript
+// routes/index.ts
+
+import wannasRoutes from './wannas';
+
+// ... existing routes ...
+
+router.use('/wannas', wannasRoutes);
+```
+
+---
+
+## 📱 Mobile Implementation
+
+### Update Types
+
+```typescript
+// types/wanna.ts
+
+export interface Wanna {
+  id: string;
+  text: string;
+  moodEmoji?: string;
+  intent: {
+    activity: string;
+    category: string;
+    energy_level: 'low' | 'medium' | 'high';
+    keywords: string[];
+    emotional_tone: string;
+  };
+  locationName: string;
+  status: 'active' | 'matching' | 'matched' | 'expired';
+  createdAt: string;
+  expiresAt: string;
+}
+
+export interface CreateWannaInput {
+  text: string;
+  moodEmoji?: string;
+  location: {
+    latitude: number;
+    longitude: number;
+    accuracy: number;
+  };
+}
+```
+
+### Wanna Store
+
+```typescript
+// store/wannaStore.ts
+
+import create from 'zustand';
+import { apiService } from '../services/apiService';
+import { Wanna, CreateWannaInput } from '../types/wanna';
+
+interface WannaState {
+  activeWannas: Wanna[];
+  isCreating: boolean;
+  error: string | null;
+  
+  createWanna: (input: CreateWannaInput) => Promise<void>;
+  getActiveWannas: () => Promise<void>;
+  cancelWanna: (wannaId: string) => Promise<void>;
+  clearError: () => void;
+}
+
+export const useWannaStore = create<WannaState>((set, get) => ({
+  activeWannas: [],
+  isCreating: false,
+  error: null,
+
+  createWanna: async (input: CreateWannaInput) => {
+    set({ isCreating: true, error: null });
+
+    try {
+      const response = await apiService.post('/wannas', input);
+      
+      // Refresh active wannas
+      await get().getActiveWannas();
+      
+      return response.data.wanna;
+    } catch (error: any) {
+      const message = error.response?.data?.message || 'Failed to create wanna';
+      set({ error: message });
+      throw new Error(message);
+    } finally {
+      set({ isCreating: false });
+    }
+  },
+
+  getActiveWannas: async () => {
+    try {
+      const response = await apiService.get('/wannas/active');
+      set({ activeWannas: response.data.wannas });
+    } catch (error) {
+      console.error('Failed to fetch wannas:', error);
+    }
+  },
+
+  cancelWanna: async (wannaId: string) => {
+    try {
+      await apiService.delete(`/wannas/${wannaId}`);
+      
+      // Remove from local state
+      set(state => ({
+        activeWannas: state.activeWannas.filter(w => w.id !== wannaId),
+      }));
+    } catch (error: any) {
+      const message = error.response?.data?.message || 'Failed to cancel wanna';
+      set({ error: message });
+      throw new Error(message);
+    }
+  },
+
+  clearError: () => set({ error: null }),
+}));
+```
+
+### Home Screen (Wanna Creation)
+
+```typescript
+// screens/HomeScreen.tsx
+
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  View,
+  Text,
+  TextInput,
+  StyleSheet,
+  Pressable,
+  KeyboardAvoidingView,
+  Platform,
+  Alert,
+} from 'react-native';
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withRepeat,
+  withSequence,
+  withTiming,
+} from 'react-native-reanimated';
+import * as Location from 'expo-location';
+import * as Haptics from 'expo-haptics';
+import { useWannaStore } from '../store/wannaStore';
+import { useAuthStore } from '../store/authStore';
+import { colors } from '../theme/colors';
+
+const MOOD_EMOJIS = ['😎', '🤩', '🧠', '💬', '🎨', '🔥', '🌟', '✨'];
+
+export const HomeScreen = ({ navigation }) => {
+  const [text, setText] = useState('');
+  const [selectedMood, setSelectedMood] = useState<string | undefined>();
+  const [isGettingLocation, setIsGettingLocation] = useState(false);
+  
+  const createWanna = useWannaStore(state => state.createWanna);
+  const isCreating = useWannaStore(state => state.isCreating);
+  const user = useAuthStore(state => state.user);
+  
+  const inputRef = useRef<TextInput>(null);
+
+  // Breathing animation for button
+  const scale = useSharedValue(1);
+
+  useEffect(() => {
+    if (text.length >= 3 && !isCreating) {
+      scale.value = withRepeat(
+        withSequence(
+          withTiming(1.02, { duration: 1500 }),
+          withTiming(1.0, { duration: 1500 })
+        ),
+        -1,
+        false
+      );
+    } else {
+      scale.value = withTiming(1);
+    }
+  }, [text, isCreating]);
+
+  const animatedButtonStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: scale.value }],
+  }));
+
+  const handleSubmit = async () => {
+    if (text.length < 3) {
+      Alert.alert('Tell us more', 'What do you wanna do? Be specific! 🌟');
+      return;
+    }
+
+    // Request location permission
+    const { status } = await Location.requestForegroundPermissionsAsync();
+    
+    if (status !== 'granted') {
+      Alert.alert(
+        'Location needed',
+        'We need your location to find people nearby. Want to enable it?',
+        [
+          { text: 'Not now', style: 'cancel' },
+          { 
+            text: 'Enable', 
+            onPress: () => Location.requestForegroundPermissionsAsync() 
+          },
+        ]
+      );
+      return;
+    }
+
+    setIsGettingLocation(true);
+
+    try {
+      // Get current location
+      const location = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+      // Create wanna
+      await createWanna({
+        text,
+        moodEmoji: selectedMood,
+        location: {
+          latitude: location.coords.latitude,
+          longitude: location.coords.longitude,
+          accuracy: location.coords.accuracy || 100,
+        },
+      });
+
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      // Clear input
+      setText('');
+      setSelectedMood(undefined);
+
+      // Navigate to matching screen (Phase 1D will implement this)
+      navigation.navigate('Matching');
+    } catch (error: any) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      
+      Alert.alert(
+        'Oops!',
+        error.message || 'Something went wrong. Mind trying again?'
+      );
+    } finally {
+      setIsGettingLocation(false);
+    }
+  };
+
+  return (
+    <KeyboardAvoidingView
+      style={styles.container}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
+      {/* Ambient gradient background */}
+      <View style={styles.gradientBackground} />
+
+      <View style={styles.content}>
+        {/* Header */}
+        <View style={styles.header}>
+          <Text style={styles.greeting}>
+            Hey {user?.username.split('_')[0]} 👋
+          </Text>
+          <Text style={styles.title}>What do you wanna do?</Text>
+        </View>
+
+        {/* Input Section */}
+        <View style={styles.inputSection}>
+          <TextInput
+            ref={inputRef}
+            style={styles.input}
+            placeholder="I wanna..."
+            placeholderTextColor={colors.text.secondary}
+            value={text}
+            onChangeText={setText}
+            multiline
+            numberOfLines={3}
+            maxLength={200}
+            autoFocus
+            editable={!isCreating}
+          />
+          
+          <Text style={styles.charCount}>
+            {text.length}/200
+          </Text>
+        </View>
+
+        {/* Mood Selector */}
+        <View style={styles.moodSection}>
+          <Text style={styles.moodLabel}>How are you feeling?</Text>
+          <View style={styles.moodGrid}>
+            {MOOD_EMOJIS.map(emoji => (
+              <Pressable
+                key={emoji}
+                style={[
+                  styles.moodButton,
+                  selectedMood === emoji && styles.moodButtonSelected,
+                ]}
+                onPress={() => {
+                  setSelectedMood(selectedMood === emoji ? undefined : emoji);
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                }}
+              >
+                <Text style={styles.moodEmoji}>{emoji}</Text>
+              </Pressable>
+            ))}
+          </View>
+        </View>
+
+        {/* Submit Button */}
+        <Animated.View style={[styles.buttonWrapper, animatedButtonStyle]}>
+          <Pressable
+            style={[
+              styles.button,
+              (text.length < 3 || isCreating || isGettingLocation) && styles.buttonDisabled,
+            ]}
+            onPress={handleSubmit}
+            disabled={text.length < 3 || isCreating || isGettingLocation}
+          >
+            <Text style={styles.buttonText}>
+              {isGettingLocation
+                ? 'Getting location...'
+                : isCreating
+                ? 'Finding your vibe...'
+                : 'Find your vibe'}
+            </Text>
+          </Pressable>
+        </Animated.View>
+
+        {/* Info */}
+        <Text style={styles.info}>
+          We'll match you with 2-4 people nearby who feel the same way ✨
+        </Text>
+      </View>
+    </KeyboardAvoidingView>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
+  gradientBackground: {
+    position: 'absolute',
+    width: '100%',
+    height: '100%',
+    opacity: 0.2,
+  },
+  content: {
+    flex: 1,
+    paddingHorizontal: 24,
+    paddingTop: 60,
+  },
+  header: {
+    marginBottom: 32,
+  },
+  greeting: {
+    fontSize: 16,
+    color: colors.text.secondary,
+    marginBottom: 8,
+  },
+  title: {
+    fontSize: 32,
+    fontWeight: '700',
+    color: colors.text.primary,
+  },
+  inputSection: {
+    marginBottom: 24,
+  },
+  input: {
+    backgroundColor: colors.surface,
+    padding: 20,
+    borderRadius: 16,
+    fontSize: 18,
+    color: colors.text.primary,
+    minHeight: 120,
+    textAlignVertical: 'top',
+  },
+  charCount: {
+    textAlign: 'right',
+    marginTop: 8,
+    fontSize: 12,
+    color: colors.text.secondary,
+  },
+  moodSection: {
+    marginBottom: 32,
+  },
+  moodLabel: {
+    fontSize: 16,
+    color: colors.text.secondary,
+    marginBottom: 12,
+  },
+  moodGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  moodButton: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: colors.surface,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  moodButtonSelected: {
+    borderColor: colors.primary,
+    backgroundColor: colors.primary + '20',
+  },
+  moodEmoji: {
+    fontSize: 28,
+  },
+  buttonWrapper: {
+    marginBottom: 16,
+  },
+  button: {
+    backgroundColor: colors.primary,
+    paddingVertical: 18,
+    borderRadius: 16,
+    alignItems: 'center',
+  },
+  buttonDisabled: {
+    opacity: 0.4,
+  },
+  buttonText: {
+    color: colors.text.primary,
+    fontSize: 18,
+    fontWeight: '600',
+  },
+  info: {
+    fontSize: 14,
+    color: colors.text.secondary,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+});
+```
+
+### Matching Screen (Placeholder)
+
+```typescript
+// screens/MatchingScreen.tsx
+
+import React, { useEffect } from 'react';
+import { View, Text, StyleSheet } from 'react-native';
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withRepeat,
+  withSequence,
+  withTiming,
+} from 'react-native-reanimated';
+import { colors } from '../theme/colors';
+
+export const MatchingScreen = () => {
+  const opacity = useSharedValue(0.3);
+  const scale = useSharedValue(1);
+
+  useEffect(() => {
+    // Pulsing glow animation
+    opacity.value = withRepeat(
+      withSequence(
+        withTiming(1, { duration: 1500 }),
+        withTiming(0.3, { duration: 1500 })
+      ),
+      -1,
+      false
+    );
+
+    scale.value = withRepeat(
+      withSequence(
+        withTiming(1.1, { duration: 1500 }),
+        withTiming(1, { duration: 1500 })
+      ),
+      -1,
+      false
+    );
+  }, []);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    opacity: opacity.value,
+    transform: [{ scale: scale.value }],
+  }));
+
+  return (
+    <View style={styles.container}>
+      <Animated.View style={[styles.glowCircle, animatedStyle]} />
+      
+      <Text style={styles.title}>Finding your vibe...</Text>
+      <Text style={styles.subtitle}>
+        Looking for people nearby who want to do the same thing
+      </Text>
+
+      {/* Placeholder - Phase 1D will implement actual matching */}
+      <Text style={styles.note}>
+        (Matching algorithm coming in Phase 1D)
+      </Text>
+    </View>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: colors.background,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 32,
+  },
+  glowCircle: {
+    width: 200,
+    height: 200,
+    borderRadius: 100,
+    backgroundColor: colors.primary,
+    marginBottom: 48,
+  },
+  title: {
+    fontSize: 28,
+    fontWeight: '700',
+    color: colors.text.primary,
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  subtitle: {
+    fontSize: 16,
+    color: colors.text.secondary,
+    textAlign: 'center',
+    lineHeight: 24,
+  },
+  note: {
+    marginTop: 32,
+    fontSize: 12,
+    color: colors.text.secondary,
+    fontStyle: 'italic',
+  },
+});
+```
+
+---
+
+## 🧪 Testing
+
+### Backend Tests
+
+```typescript
+// tests/wanna.test.ts
+
+import { describe, test, expect, beforeEach } from '@jest/globals';
+import { wannaService } from '../services/wannaService';
+import { aiService } from '../services/aiService';
+import { db } from '../config/database';
+
+describe('Wanna Service', () => {
+  let testUser: any;
+
+  beforeEach(async () => {
+    await db.wannas.destroy({ where: {} });
+    
+    // Create test user
+    testUser = await db.users.create({
+      username: 'TestUser_1234',
+      account_tier: 'anonymous',
+      is_18_plus: true,
+    });
+  });
+
+  describe('Wanna Creation', () => {
+    test('should create wanna successfully', async () => {
+      const result = await wannaService.createWanna({
+        userId: testUser.id,
+        rawInput: 'I wanna grab coffee',
+        location: {
+          latitude: 51.5074,
+          longitude: -0.1278,
+          accuracy: 50,
+        },
+      });
+
+      expect(result).toHaveProperty('wannaId');
+      expect(result).toHaveProperty('intent');
+      expect(result.intent.activity).toBeTruthy();
+      expect(result.intent.category).toBeTruthy();
+      
+      // Check database
+      const wanna = await db.wannas.findByPk(result.wannaId);
+      expect(wanna).toBeTruthy();
+      expect(wanna.status).toBe('active');
+    });
+
+    test('should reject input that is too short', async () => {
+      await expect(
+        wannaService.createWanna({
+          userId: testUser.id,
+          rawInput: 'hi',
+          location: {
+            latitude: 51.5074,
+            longitude: -0.1278,
+            accuracy: 50,
+          },
+        })
+      ).rejects.toThrow();
+    });
+
+    test('should reject invalid coordinates', async () => {
+      await expect(
+        wannaService.createWanna({
+          userId: testUser.id,
+          rawInput: 'I wanna grab coffee',
+          location: {
+            latitude: 200, // Invalid
+            longitude: -0.1278,
+            accuracy: 50,
+          },
+        })
+      ).rejects.toThrow('Invalid location');
+    });
+  });
+
+  describe('AI Intent Parsing', () => {
+    test('should parse coffee wanna correctly', async () => {
+      const result = await aiService.parseIntent('I wanna grab coffee');
+
+      expect(result.intent.activity).toContain('coffee');
+      expect(result.intent.category).toBe('food_social');
+      expect(result.intent.energy_level).toBeTruthy();
+      expect(result.embedding).toHaveLength(1536);
+    });
+
+    test('should handle fallback parsing', async () => {
+      // Mock API failure
+      jest.spyOn(aiService as any, 'generateEmbedding').mockRejectedValue(new Error());
+
+      const result = await aiService.parseIntent('I wanna grab coffee');
+
+      expect(result.intent).toBeTruthy();
+      expect(result.intent.confidence).toBeLessThan(1);
+    });
+  });
+
+  describe('Wanna Management', () => {
+    test('should cancel wanna', async () => {
+      const created = await wannaService.createWanna({
+        userId: testUser.id,
+        rawInput: 'I wanna grab coffee',
+        location: { latitude: 51.5074, longitude: -0.1278, accuracy: 50 },
+      });
+
+      await wannaService.cancelWanna(created.wannaId, testUser.id);
+
+      const wanna = await db.wannas.findByPk(created.wannaId);
+      expect(wanna.status).toBe('cancelled');
+    });
+
+    test('should get user active wannas', async () => {
+      await wannaService.createWanna({
+        userId: testUser.id,
+        rawInput: 'I wanna grab coffee',
+        location: { latitude: 51.5074, longitude: -0.1278, accuracy: 50 },
+      });
+
+      const wannas = await wannaService.getUserActiveWannas(testUser.id);
+      expect(wannas).toHaveLength(1);
+    });
+  });
+});
+```
+
+---
+
+## 📋 Deliverables Checklist
+
+### Backend ✅
+
+- [ ] Wannas table with proper schema and indexes
+- [ ] pgvector extension installed for embeddings
+- [ ] AI service with OpenAI integration
+- [ ] Intent parsing with structured output
+- [ ] Semantic embedding generation
+- [ ] Location service with reverse geocoding
+- [ ] Wanna service with create/cancel/list methods
+- [ ] Redis caching for active wannas
+- [ ] Geospatial indexing (GEOADD)
+- [ ] API routes (create, list active, cancel, suggestions)
+- [ ] Rate limiting enforcement
+- [ ] Input validation with Zod
+- [ ] Expired wanna cleanup job
+- [ ] Matching queue placeholder
+- [ ] Unit tests for wanna creation and AI parsing
+
+### Mobile ✅
+
+- [ ] Wanna store with Zustand
+- [ ] Home screen with wanna input
+- [ ] Mood emoji selector
+- [ ] Character counter (200 max)
+- [ ] Location permission handling
+- [ ] Breathing button animation
+- [ ] Loading states (getting location, creating)
+- [ ] Matching screen placeholder
+- [ ] Haptic feedback on submit
+- [ ] Error handling with friendly messages
+- [ ] Navigation to matching screen
+- [ ] Integration tests for wanna creation flow
+
+### Infrastructure ✅
+
+- [ ] OpenAI API key configured
+- [ ] pgvector extension enabled
+- [ ] Redis geospatial commands working
+- [ ] Reverse geocoding service (Nominatim)
+- [ ] Matching queue (Redis list)
+
+---
+
+## 🚀 Getting Started
+
+### Backend Setup
+
+```bash
+# 1. Install new dependencies
+cd backend
+npm install openai
+
+# 2. Enable pgvector extension
+psql -d iwanna -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+# 3. Run migrations for wannas table
+npm run migrate
+
+# 4. Add OpenAI API key to .env
+OPENAI_API_KEY=sk-your-key-here
+
+# 5. Start server
+npm run dev
+```
+
+### Mobile Setup
+
+```bash
+# 1. Install location package (if not already)
+cd mobile
+npx expo install expo-location
+
+# 2. Start dev server
+npx expo start
+```
+
+---
+
+## 🎯 Success Criteria
+
+After Phase 1C, you should be able to:
+
+1. ✅ Open app and see "What do you wanna do?" input
+2. ✅ Type a wanna (e.g., "I wanna grab coffee")
+3. ✅ Select optional mood emoji
+4. ✅ Tap "Find your vibe" and grant location permission
+5. ✅ See AI parse your intent correctly
+6. ✅ Wanna saved to database with embedding
+7. ✅ Added to Redis geospatial index
+8. ✅ Queued for matching (Phase 1D will process)
+9. ✅ Navigate to "Finding your vibe..." screen
+10. ✅ Rate limits enforced (5/day for anonymous)
+11. ✅ Can view active wannas
+12. ✅ Can cancel wannas
+13. ✅ Experience smooth animations throughout
+
+---
+
+## 🎨 UI/UX Highlights
+
+**✨ Feels Alive:**
+- Input field with soft glow on focus
+- Breathing animation on submit button when ready
+- Pulsing glow during matching
+- Haptic feedback on emoji selection and submit
+
+**💬 Conversational Language:**
+- "What do you wanna do?" (warm invitation)
+- "Find your vibe" (not "Submit")
+- "Finding your vibe..." (not "Processing")
+- "Tell us more" (helpful error, not "Error: Input too short")
+
+**🎯 Zero Friction:**
+- Auto-focus on input
+- Clear character count
+- Optional mood selector (not required)
+- One-tap location permission
+- Instant feedback
+
+---
+
+## 🔗 Integration Points
+
+### With Phase 1B (Auth):
+- ✅ Uses authenticated user ID
+- ✅ Enforces rate limits by tier
+- ✅ Increments user's wanna counter
+- ✅ Shows username in greeting
+
+### With Phase 1D (Matching):
+- ✅ Queues wanna for matching
+- ✅ Adds to Redis geospatial index
+- ✅ Stores semantic embedding for similarity
+- ✅ Navigates to matching screen
+
+---
+
+## 🐛 Known Limitations (By Design)
+
+1. **OpenAI API costs** - ~$0.001 per wanna (acceptable for MVP)
+2. **Nominatim rate limits** - 1 request/sec (fine for MVP, upgrade later)
+3. **Matching is placeholder** - Phase 1D will implement actual matching
+4. **No autocomplete yet** - Basic suggestions only (can enhance post-MVP)
+5. **Single language** - English only for MVP (i18n later)
+
+---
+
+## 💡 Technical Highlights
+
+### AI Intent Parsing:
+```
+"I wanna grab coffee" →
+{
+  activity: "coffee",
+  category: "food_social",
+  energy_level: "medium",
+  keywords: ["coffee", "casual", "conversation"],
+  emotional_tone: "curious"
+}
+```
+
+### Semantic Matching Ready:
+```
+Embeddings stored → Phase 1D will use cosine similarity
+to match "coffee" with "cafe", "tea", "brunch", etc.
+```
+
+### Geospatial Ready:
+```
+Redis GEOADD → Phase 1D will use GEORADIUS
+to find wannas within X miles
+```
+
+---
+
+## 📊 What's Next (Phase 1D)
+
+After Phase 1C wanna creation is complete:
+
+**Phase 1D: Matching Algorithm**
+- Geographic proximity search (PostGIS + Redis GEORADIUS)
+- Semantic similarity scoring (cosine similarity on embeddings)
+- Multi-dimensional compatibility calculation
+- Pod formation logic (2-5 people)
+- Real-time notifications
+- Match result screen
+
+The wanna is created. Now let's **find the perfect pod**! 🚀
+
+---
+
+## 🎉 Final Notes
+
+Phase 1C transforms Iwanna from an auth system into a **living, breathing product**. Users can now:
+
+✅ Express spontaneous desires
+✅ Have AI understand their intent
+✅ Get matched with compatible people nearby (Phase 1D)
+
+The **soul of Iwanna** is now visible. The question "What do you wanna do?" is the entire interface, and it feels **alive, warm, and inviting**.
+
+**Ready to build the core magic? Let's create some wannas! ✨**

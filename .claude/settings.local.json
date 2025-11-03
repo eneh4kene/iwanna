@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run build:*)",
+      "Bash(npm install:*)",
+      "Bash(cat:*)",
+      "Read(//Users/kene_eneh/Library/Android/sdk/emulator/**)",
+      "Bash(~/Library/Android/sdk/emulator/emulator:*)",
+      "Bash(npx expo start:*)",
+      "Bash(lsof:*)",
+      "Read(//private/tmp/**)",
+      "Bash(kill:*)",
+      "Bash(~/Library/Android/sdk/platform-tools/adb shell am start -n host.exp.exponent/.LauncherActivity)",
+      "Bash(~/Library/Android/sdk/platform-tools/adb shell am start -a android.intent.action.VIEW -d \"exp://192.168.1.252:8081\")",
+      "Read(//Applications/**)",
+      "Bash(export JAVA_HOME=\"/Applications/Android Studio.app/Contents/jbr/Contents/Home\")",
+      "Bash(export PATH=\"$JAVA_HOME/bin:$PATH\")",
+      "Bash(java -version:*)",
+      "Bash(~/Library/Android/sdk/platform-tools/adb shell pm list packages)",
+      "Bash(curl:*)",
+      "Bash(psql:*)",
+      "Bash(docker-compose exec:*)",
+      "Bash(npx expo install:*)",
+      "Bash(awk:*)",
+      "Bash(pkill:*)",
+      "Bash(npm run dev:*)",
+      "Bash(xargs kill:*)",
+      "Bash(git add:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

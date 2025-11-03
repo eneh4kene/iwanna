@@ -1,0 +1,2012 @@
+# IWANNA - PHASE 1B: AUTHENTICATION SYSTEM (MVP FOCUSED)
+
+## Context & Scope
+
+You have the complete Iwanna system prompt with full architecture and design philosophy. Phase 1A (project setup) is complete with Expo mobile app + Node.js backend + PostgreSQL database.
+
+**Phase 1B Goal:** Implement a production-ready anonymous-first authentication system that validates users are 18+, tracks them securely for moderation, and allows optional account upgrades.
+
+**Critical MVP Constraint:** We are ONLY building authentication for **18+ users** participating in **social pods**. No teen features, no solo wannas, no DMs, no monetization. Those come post-PMF.
+
+---
+
+## 🎯 Product Philosophy for Authentication
+
+### What We're Building:
+**A frictionless, anonymous-first authentication system that feels alive and respects privacy while enabling trust and safety.**
+
+### Core Principles:
+1. **Zero friction signup** - No email/phone required initially
+2. **Anonymous to users, tracked by system** - Reddit's model
+3. **18+ only** - Legal safety for MVP
+4. **Progressive enhancement** - Can upgrade later
+5. **Security without paranoia** - Trust scores, not surveillance
+6. **Feels alive** - Breathing animations, warm copy, organic flow
+
+---
+
+## 🏗️ System Architecture Overview
+
+### Three-Tier Account System
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ TIER 1: ANONYMOUS (Default)                            │
+├─────────────────────────────────────────────────────────┤
+│ • No email/phone required                              │
+│ • Auto-generated username (e.g., "CuriousVibe_8234")  │
+│ • Backend UUID for tracking                            │
+│ • 12-word recovery phrase                              │
+│ • Device-locked initially                              │
+│ • Rate limited: 5 wannas/day                           │
+│ • Trust score: 100 (starting)                          │
+└─────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────┐
+│ TIER 2: ANONYMOUS + EMAIL (Optional Upgrade)           │
+├─────────────────────────────────────────────────────────┤
+│ • Add email for cross-device sync                      │
+│ • Still anonymous to other users                       │
+│ • Easier account recovery                              │
+│ • Rate limited: 10 wannas/day                          │
+│ • Trust score: Inherits from Tier 1                    │
+└─────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────┐
+│ TIER 3: AUTHENTICATED (Optional Upgrade)               │
+├─────────────────────────────────────────────────────────┤
+│ • Google or Apple Sign-In                              │
+│ • Full cross-device automatic sync                     │
+│ • Connection history persists                          │
+│ • Unlimited wannas                                     │
+│ • Trust score: Inherits from previous tier             │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 📊 Database Schema
+
+### Users Table
+
+```sql
+CREATE TABLE users (
+  -- Core identity (backend only - never show other users)
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  username VARCHAR(50) UNIQUE NOT NULL,
+  
+  -- Account tier
+  account_tier VARCHAR(20) DEFAULT 'anonymous' CHECK (account_tier IN ('anonymous', 'email', 'authenticated')),
+  
+  -- Tier 1: Anonymous fields
+  recovery_phrase_hash VARCHAR(255) UNIQUE,     -- bcrypt hash of recovery phrase
+  device_fingerprint VARCHAR(255),              -- Optional for fraud detection
+  
+  -- Tier 2: Email fields (nullable)
+  email VARCHAR(255) UNIQUE,
+  email_verified BOOLEAN DEFAULT false,
+  email_verification_token VARCHAR(255),
+  
+  -- Tier 3: Social auth fields (nullable)
+  auth_provider VARCHAR(20),                    -- 'google', 'apple', null
+  social_id VARCHAR(255),                       -- Provider's user ID
+  social_email VARCHAR(255),                    -- From social provider
+  
+  -- Age verification (18+ required)
+  is_18_plus BOOLEAN DEFAULT false NOT NULL,
+  birth_year INTEGER,                           -- Optional, for analytics only
+  age_verified_at TIMESTAMP,
+  
+  -- Trust & Safety
+  trust_score INTEGER DEFAULT 100 CHECK (trust_score >= 0 AND trust_score <= 200),
+  is_banned BOOLEAN DEFAULT false,
+  ban_reason TEXT,
+  banned_until TIMESTAMP,
+  
+  -- Activity tracking
+  wannas_created_count INTEGER DEFAULT 0,
+  pods_joined_count INTEGER DEFAULT 0,
+  connections_made_count INTEGER DEFAULT 0,
+  reports_received_count INTEGER DEFAULT 0,
+  reports_made_count INTEGER DEFAULT 0,
+  
+  -- Rate limiting
+  last_wanna_at TIMESTAMP,
+  wannas_today INTEGER DEFAULT 0,
+  rate_limit_reset_at TIMESTAMP,
+  
+  -- Timestamps
+  created_at TIMESTAMP DEFAULT NOW(),
+  last_active_at TIMESTAMP DEFAULT NOW(),
+  upgraded_to_email_at TIMESTAMP,
+  upgraded_to_authenticated_at TIMESTAMP,
+  
+  -- Constraints
+  CONSTRAINT valid_email_tier CHECK (
+    account_tier != 'email' OR email IS NOT NULL
+  ),
+  CONSTRAINT valid_authenticated_tier CHECK (
+    account_tier != 'authenticated' OR (auth_provider IS NOT NULL AND social_id IS NOT NULL)
+  ),
+  CONSTRAINT age_verified CHECK (is_18_plus = true)
+);
+
+-- Indexes for performance
+CREATE INDEX idx_users_username ON users(username);
+CREATE INDEX idx_users_email ON users(email) WHERE email IS NOT NULL;
+CREATE INDEX idx_users_social ON users(auth_provider, social_id) WHERE auth_provider IS NOT NULL;
+CREATE INDEX idx_users_device ON users(device_fingerprint) WHERE device_fingerprint IS NOT NULL;
+CREATE INDEX idx_users_trust ON users(trust_score);
+CREATE INDEX idx_users_banned ON users(is_banned) WHERE is_banned = true;
+CREATE INDEX idx_users_active ON users(last_active_at DESC);
+
+-- Recovery phrase lookup optimization
+CREATE INDEX idx_users_recovery_phrase ON users USING hash(recovery_phrase_hash);
+```
+
+### Refresh Tokens Table
+
+```sql
+CREATE TABLE refresh_tokens (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash VARCHAR(255) UNIQUE NOT NULL,
+  device_info JSONB,
+  ip_address VARCHAR(45),
+  expires_at TIMESTAMP NOT NULL,
+  revoked BOOLEAN DEFAULT false,
+  revoked_at TIMESTAMP,
+  created_at TIMESTAMP DEFAULT NOW(),
+  last_used_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_refresh_tokens_user ON refresh_tokens(user_id);
+CREATE INDEX idx_refresh_tokens_hash ON refresh_tokens(token_hash) WHERE revoked = false;
+CREATE INDEX idx_refresh_tokens_expires ON refresh_tokens(expires_at) WHERE revoked = false;
+```
+
+### Recovery Attempts Table (Security Logging)
+
+```sql
+CREATE TABLE recovery_attempts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  attempted_phrase VARCHAR(500),               -- First 50 chars only, for pattern detection
+  ip_address VARCHAR(45),
+  device_info JSONB,
+  success BOOLEAN DEFAULT false,
+  user_id UUID REFERENCES users(id),          -- Only set if success = true
+  attempted_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_recovery_attempts_ip ON recovery_attempts(ip_address, attempted_at);
+CREATE INDEX idx_recovery_attempts_success ON recovery_attempts(success, attempted_at);
+```
+
+---
+
+## 🔐 Backend Implementation
+
+### Environment Variables
+
+```bash
+# .env (backend)
+NODE_ENV=development
+PORT=3001
+
+# Database
+DATABASE_URL=postgresql://user:password@localhost:5432/iwanna
+REDIS_URL=redis://localhost:6379
+
+# JWT Secrets (use strong random strings)
+JWT_ACCESS_SECRET=your_access_secret_minimum_32_chars
+JWT_REFRESH_SECRET=your_refresh_secret_minimum_32_chars
+
+# Security
+BCRYPT_ROUNDS=10
+MAX_RECOVERY_ATTEMPTS_PER_IP=5
+RECOVERY_ATTEMPT_WINDOW_HOURS=1
+
+# Rate Limiting
+TIER1_WANNAS_PER_DAY=5
+TIER2_WANNAS_PER_DAY=10
+TIER3_WANNAS_PER_DAY=999
+
+# OAuth (for Tier 3)
+GOOGLE_CLIENT_ID=your_google_client_id
+GOOGLE_CLIENT_SECRET=your_google_client_secret
+APPLE_CLIENT_ID=your_apple_client_id
+APPLE_CLIENT_SECRET=your_apple_client_secret
+
+# App URL (for email verification in Tier 2)
+APP_URL=http://localhost:3001
+MOBILE_DEEP_LINK=iwanna://
+```
+
+---
+
+### Core Authentication Service
+
+```typescript
+// services/authService.ts
+
+import { v4 as uuidv4 } from 'uuid';
+import bcrypt from 'bcrypt';
+import jwt from 'jsonwebtoken';
+import { generateMnemonic } from 'bip39';
+import crypto from 'crypto';
+import { db } from '../config/database';
+import { redis } from '../config/redis';
+
+interface CreateAnonymousAccountResult {
+  userId: string;
+  username: string;
+  token: string;
+  refreshToken: string;
+  recoveryPhrase: string; // Only returned once!
+}
+
+class AuthService {
+  /**
+   * Generate anonymous username
+   * Format: AdjNoun_4digits (e.g., "CuriousVibe_8234")
+   */
+  private generateUsername(): string {
+    const adjectives = [
+      'Curious', 'Vibrant', 'Chill', 'Creative', 'Energetic',
+      'Mellow', 'Spontaneous', 'Peaceful', 'Bold', 'Gentle',
+      'Warm', 'Cool', 'Bright', 'Calm', 'Lively',
+      'Mindful', 'Open', 'Quiet', 'Radiant', 'Serene'
+    ];
+    
+    const nouns = [
+      'Vibe', 'Soul', 'Spirit', 'Mind', 'Heart',
+      'Wave', 'Flow', 'Pulse', 'Beat', 'Rhythm',
+      'Dream', 'Echo', 'Spark', 'Light', 'Moon',
+      'Sun', 'Star', 'Cloud', 'Wind', 'Rain'
+    ];
+    
+    const adj = adjectives[Math.floor(Math.random() * adjectives.length)];
+    const noun = nouns[Math.floor(Math.random() * nouns.length)];
+    const num = Math.floor(1000 + Math.random() * 9000);
+    
+    return `${adj}${noun}_${num}`;
+  }
+
+  /**
+   * Generate device fingerprint for fraud detection
+   */
+  generateDeviceFingerprint(deviceInfo: any): string {
+    const dataString = JSON.stringify({
+      ...deviceInfo,
+      // Don't include user-changeable data
+    });
+    
+    return crypto
+      .createHash('sha256')
+      .update(dataString)
+      .digest('hex');
+  }
+
+  /**
+   * Create Tier 1 anonymous account
+   */
+  async createAnonymousAccount(
+    deviceInfo: any,
+    isOver18: boolean
+  ): Promise<CreateAnonymousAccountResult> {
+    if (!isOver18) {
+      throw new Error('Must be 18 or older to use Iwanna');
+    }
+
+    // Generate unique username (check for collisions)
+    let username: string;
+    let attempts = 0;
+    
+    do {
+      username = this.generateUsername();
+      const existing = await db.users.findOne({ where: { username } });
+      if (!existing) break;
+      attempts++;
+    } while (attempts < 10);
+    
+    if (attempts >= 10) {
+      throw new Error('Unable to generate unique username');
+    }
+
+    // Generate recovery phrase (12 words)
+    const recoveryPhrase = generateMnemonic(128); // 12 words
+    const recoveryPhraseHash = await bcrypt.hash(
+      recoveryPhrase.toLowerCase().trim(),
+      parseInt(process.env.BCRYPT_ROUNDS || '10')
+    );
+
+    // Generate device fingerprint
+    const deviceFingerprint = this.generateDeviceFingerprint(deviceInfo);
+
+    // Create user
+    const user = await db.users.create({
+      id: uuidv4(),
+      username,
+      account_tier: 'anonymous',
+      recovery_phrase_hash: recoveryPhraseHash,
+      device_fingerprint: deviceFingerprint,
+      is_18_plus: true,
+      age_verified_at: new Date(),
+      trust_score: 100,
+    });
+
+    // Generate tokens
+    const { token, refreshToken } = await this.generateTokens(user.id, 'anonymous');
+
+    return {
+      userId: user.id,
+      username: user.username,
+      token,
+      refreshToken,
+      recoveryPhrase, // ONLY TIME THIS IS RETURNED
+    };
+  }
+
+  /**
+   * Generate JWT access token and refresh token
+   */
+  async generateTokens(userId: string, accountTier: string) {
+    // Access token (short-lived)
+    const token = jwt.sign(
+      { 
+        userId,
+        accountTier,
+        type: 'access'
+      },
+      process.env.JWT_ACCESS_SECRET!,
+      { expiresIn: '15m' }
+    );
+
+    // Refresh token (long-lived)
+    const refreshTokenValue = uuidv4();
+    const refreshTokenHash = crypto
+      .createHash('sha256')
+      .update(refreshTokenValue)
+      .digest('hex');
+
+    // Store refresh token in database
+    await db.refresh_tokens.create({
+      user_id: userId,
+      token_hash: refreshTokenHash,
+      expires_at: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000), // 90 days
+    });
+
+    const refreshToken = jwt.sign(
+      { 
+        userId,
+        tokenId: refreshTokenValue,
+        type: 'refresh'
+      },
+      process.env.JWT_REFRESH_SECRET!,
+      { expiresIn: '90d' }
+    );
+
+    return { token, refreshToken };
+  }
+
+  /**
+   * Recover account using recovery phrase
+   */
+  async recoverAccount(
+    recoveryPhrase: string,
+    ipAddress: string,
+    deviceInfo: any
+  ): Promise<{ userId: string; username: string; token: string; refreshToken: string }> {
+    const normalizedPhrase = recoveryPhrase.toLowerCase().trim();
+
+    // Rate limiting check
+    const attemptKey = `recovery_attempts:${ipAddress}`;
+    const attempts = await redis.incr(attemptKey);
+    
+    if (attempts === 1) {
+      await redis.expire(attemptKey, 3600); // 1 hour window
+    }
+    
+    if (attempts > 5) {
+      // Log suspicious activity
+      await db.recovery_attempts.create({
+        attempted_phrase: normalizedPhrase.substring(0, 50),
+        ip_address: ipAddress,
+        device_info: deviceInfo,
+        success: false,
+      });
+      
+      throw new Error('Too many recovery attempts. Try again in 1 hour.');
+    }
+
+    // Find user by recovery phrase
+    // NOTE: This is slow because we must check all users
+    // For production with many users, consider using HMAC indexing
+    const users = await db.users.findAll({
+      where: { 
+        recovery_phrase_hash: { $ne: null },
+        is_banned: false
+      }
+    });
+
+    for (const user of users) {
+      const isMatch = await bcrypt.compare(normalizedPhrase, user.recovery_phrase_hash!);
+      
+      if (isMatch) {
+        // Success! Log it
+        await db.recovery_attempts.create({
+          attempted_phrase: normalizedPhrase.substring(0, 50),
+          ip_address: ipAddress,
+          device_info: deviceInfo,
+          success: true,
+          user_id: user.id,
+        });
+
+        // Clear rate limit
+        await redis.del(attemptKey);
+
+        // Generate new tokens
+        const { token, refreshToken } = await this.generateTokens(
+          user.id,
+          user.account_tier
+        );
+
+        // Update device fingerprint
+        await user.update({
+          device_fingerprint: this.generateDeviceFingerprint(deviceInfo),
+          last_active_at: new Date(),
+        });
+
+        return {
+          userId: user.id,
+          username: user.username,
+          token,
+          refreshToken,
+        };
+      }
+    }
+
+    // No match - log failed attempt
+    await db.recovery_attempts.create({
+      attempted_phrase: normalizedPhrase.substring(0, 50),
+      ip_address: ipAddress,
+      device_info: deviceInfo,
+      success: false,
+    });
+
+    throw new Error('Invalid recovery phrase');
+  }
+
+  /**
+   * Refresh access token
+   */
+  async refreshAccessToken(refreshToken: string): Promise<{ token: string }> {
+    try {
+      const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET!) as any;
+      
+      // Hash the token ID to check database
+      const tokenHash = crypto
+        .createHash('sha256')
+        .update(decoded.tokenId)
+        .digest('hex');
+
+      // Check if refresh token exists and is valid
+      const storedToken = await db.refresh_tokens.findOne({
+        where: {
+          token_hash: tokenHash,
+          user_id: decoded.userId,
+          revoked: false,
+          expires_at: { $gt: new Date() }
+        }
+      });
+
+      if (!storedToken) {
+        throw new Error('Invalid refresh token');
+      }
+
+      // Update last used
+      await storedToken.update({ last_used_at: new Date() });
+
+      // Get user for account tier
+      const user = await db.users.findByPk(decoded.userId);
+      if (!user || user.is_banned) {
+        throw new Error('User not found or banned');
+      }
+
+      // Generate new access token
+      const token = jwt.sign(
+        { 
+          userId: user.id,
+          accountTier: user.account_tier,
+          type: 'access'
+        },
+        process.env.JWT_ACCESS_SECRET!,
+        { expiresIn: '15m' }
+      );
+
+      return { token };
+    } catch (error) {
+      throw new Error('Invalid refresh token');
+    }
+  }
+
+  /**
+   * Logout (revoke refresh token)
+   */
+  async logout(refreshToken: string): Promise<void> {
+    try {
+      const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET!) as any;
+      
+      const tokenHash = crypto
+        .createHash('sha256')
+        .update(decoded.tokenId)
+        .digest('hex');
+
+      await db.refresh_tokens.update(
+        { 
+          revoked: true,
+          revoked_at: new Date()
+        },
+        { 
+          where: { token_hash: tokenHash }
+        }
+      );
+    } catch (error) {
+      // Silent fail - token might already be invalid
+    }
+  }
+
+  /**
+   * Upgrade Tier 1 to Tier 2 (add email)
+   */
+  async upgradeToEmail(
+    userId: string,
+    email: string
+  ): Promise<{ success: boolean; verificationRequired: boolean }> {
+    const user = await db.users.findByPk(userId);
+    
+    if (!user) {
+      throw new Error('User not found');
+    }
+    
+    if (user.account_tier !== 'anonymous') {
+      throw new Error('Can only upgrade from anonymous tier');
+    }
+
+    // Check if email already exists
+    const existing = await db.users.findOne({ where: { email } });
+    if (existing) {
+      throw new Error('Email already in use');
+    }
+
+    // Generate email verification token
+    const verificationToken = crypto.randomBytes(32).toString('hex');
+    
+    await user.update({
+      email,
+      email_verified: false,
+      email_verification_token: verificationToken,
+      account_tier: 'email',
+      upgraded_to_email_at: new Date(),
+    });
+
+    // TODO: Send verification email (implement in Phase 2)
+    // For MVP, we'll auto-verify
+    await user.update({ email_verified: true });
+
+    return {
+      success: true,
+      verificationRequired: false, // Will be true when email service added
+    };
+  }
+
+  /**
+   * Upgrade to Tier 3 (social authentication)
+   */
+  async upgradeToSocial(
+    userId: string,
+    provider: 'google' | 'apple',
+    socialId: string,
+    socialEmail: string
+  ): Promise<{ success: boolean }> {
+    const user = await db.users.findByPk(userId);
+    
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    // Check if social account already linked
+    const existing = await db.users.findOne({
+      where: {
+        auth_provider: provider,
+        social_id: socialId
+      }
+    });
+
+    if (existing && existing.id !== userId) {
+      throw new Error('This social account is already linked to another Iwanna account');
+    }
+
+    await user.update({
+      auth_provider: provider,
+      social_id: socialId,
+      social_email: socialEmail,
+      account_tier: 'authenticated',
+      upgraded_to_authenticated_at: new Date(),
+    });
+
+    return { success: true };
+  }
+
+  /**
+   * Check rate limits for wanna creation
+   */
+  async checkRateLimit(userId: string): Promise<{ allowed: boolean; remaining: number }> {
+    const user = await db.users.findByPk(userId);
+    
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    // Get tier limits
+    const limits = {
+      anonymous: parseInt(process.env.TIER1_WANNAS_PER_DAY || '5'),
+      email: parseInt(process.env.TIER2_WANNAS_PER_DAY || '10'),
+      authenticated: parseInt(process.env.TIER3_WANNAS_PER_DAY || '999'),
+    };
+
+    const limit = limits[user.account_tier];
+
+    // Reset counter if new day
+    const now = new Date();
+    const resetTime = user.rate_limit_reset_at;
+    
+    if (!resetTime || resetTime < now) {
+      await user.update({
+        wannas_today: 0,
+        rate_limit_reset_at: new Date(now.getTime() + 24 * 60 * 60 * 1000),
+      });
+      
+      return { allowed: true, remaining: limit - 1 };
+    }
+
+    // Check limit
+    if (user.wannas_today >= limit) {
+      return { allowed: false, remaining: 0 };
+    }
+
+    return {
+      allowed: true,
+      remaining: limit - user.wannas_today - 1,
+    };
+  }
+
+  /**
+   * Increment wanna counter
+   */
+  async incrementWannaCount(userId: string): Promise<void> {
+    await db.users.increment('wannas_today', { where: { id: userId } });
+    await db.users.increment('wannas_created_count', { where: { id: userId } });
+    await db.users.update({ last_wanna_at: new Date() }, { where: { id: userId } });
+  }
+}
+
+export const authService = new AuthService();
+```
+
+---
+
+### Authentication Middleware
+
+```typescript
+// middleware/authenticate.ts
+
+import { Request, Response, NextFunction } from 'express';
+import jwt from 'jsonwebtoken';
+import { db } from '../config/database';
+
+// Extend Express Request type
+declare global {
+  namespace Express {
+    interface Request {
+      user?: any;
+      userId?: string;
+    }
+  }
+}
+
+export const authenticateToken = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader?.split(' ')[1]; // "Bearer TOKEN"
+
+  if (!token) {
+    return res.status(401).json({ 
+      error: 'Authentication required',
+      message: 'Please sign in to continue' 
+    });
+  }
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_ACCESS_SECRET!) as any;
+    
+    if (decoded.type !== 'access') {
+      return res.status(403).json({ error: 'Invalid token type' });
+    }
+
+    // Load user from database
+    const user = await db.users.findByPk(decoded.userId);
+    
+    if (!user) {
+      return res.status(401).json({ error: 'User not found' });
+    }
+
+    if (user.is_banned) {
+      return res.status(403).json({ 
+        error: 'Account suspended',
+        message: user.ban_reason || 'Your account has been suspended'
+      });
+    }
+
+    // Update last active
+    await user.update({ last_active_at: new Date() });
+
+    // Attach to request
+    req.user = user;
+    req.userId = user.id;
+    
+    next();
+  } catch (error) {
+    if (error.name === 'TokenExpiredError') {
+      return res.status(401).json({ 
+        error: 'Token expired',
+        message: 'Please refresh your session'
+      });
+    }
+    
+    return res.status(403).json({ 
+      error: 'Invalid token',
+      message: 'Authentication failed'
+    });
+  }
+};
+
+export const optionalAuth = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader?.split(' ')[1];
+
+  if (!token) {
+    return next(); // Continue without auth
+  }
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_ACCESS_SECRET!) as any;
+    const user = await db.users.findByPk(decoded.userId);
+    
+    if (user && !user.is_banned) {
+      req.user = user;
+      req.userId = user.id;
+    }
+  } catch (error) {
+    // Silent fail - continue without auth
+  }
+  
+  next();
+};
+```
+
+---
+
+### API Routes
+
+```typescript
+// routes/auth.ts
+
+import express from 'express';
+import { z } from 'zod';
+import { authService } from '../services/authService';
+import { authenticateToken } from '../middleware/authenticate';
+
+const router = express.Router();
+
+// Validation schemas
+const createAccountSchema = z.object({
+  isOver18: z.boolean().refine(val => val === true, {
+    message: 'Must be 18 or older to use Iwanna'
+  }),
+  deviceInfo: z.object({
+    platform: z.enum(['ios', 'android']),
+    osVersion: z.string(),
+    appVersion: z.string(),
+    deviceModel: z.string().optional(),
+  }),
+});
+
+const recoverAccountSchema = z.object({
+  recoveryPhrase: z.string()
+    .min(10, 'Recovery phrase too short')
+    .max(500, 'Recovery phrase too long'),
+});
+
+const refreshTokenSchema = z.object({
+  refreshToken: z.string(),
+});
+
+const upgradeEmailSchema = z.object({
+  email: z.string().email('Invalid email address'),
+});
+
+const upgradeSocialSchema = z.object({
+  provider: z.enum(['google', 'apple']),
+  credential: z.string(),
+});
+
+/**
+ * POST /api/v1/auth/create-anonymous
+ * Create Tier 1 anonymous account
+ */
+router.post('/create-anonymous', async (req, res, next) => {
+  try {
+    const data = createAccountSchema.parse(req.body);
+    
+    const result = await authService.createAnonymousAccount(
+      data.deviceInfo,
+      data.isOver18
+    );
+
+    res.status(201).json({
+      success: true,
+      userId: result.userId,
+      username: result.username,
+      token: result.token,
+      refreshToken: result.refreshToken,
+      recoveryPhrase: result.recoveryPhrase, // SHOW ONCE!
+      accountTier: 'anonymous',
+      message: 'Account created! Save your recovery phrase.',
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/v1/auth/recover
+ * Recover account using recovery phrase
+ */
+router.post('/recover', async (req, res, next) => {
+  try {
+    const data = recoverAccountSchema.parse(req.body);
+    const ipAddress = req.ip || req.connection.remoteAddress || 'unknown';
+    
+    const result = await authService.recoverAccount(
+      data.recoveryPhrase,
+      ipAddress,
+      req.body.deviceInfo || {}
+    );
+
+    res.json({
+      success: true,
+      userId: result.userId,
+      username: result.username,
+      token: result.token,
+      refreshToken: result.refreshToken,
+      message: 'Welcome back! ✨',
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/v1/auth/refresh
+ * Refresh access token
+ */
+router.post('/refresh', async (req, res, next) => {
+  try {
+    const data = refreshTokenSchema.parse(req.body);
+    
+    const result = await authService.refreshAccessToken(data.refreshToken);
+
+    res.json({
+      success: true,
+      token: result.token,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/v1/auth/logout
+ * Logout and revoke refresh token
+ */
+router.post('/logout', async (req, res, next) => {
+  try {
+    const data = refreshTokenSchema.parse(req.body);
+    
+    await authService.logout(data.refreshToken);
+
+    res.json({
+      success: true,
+      message: 'Logged out successfully',
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/v1/auth/me
+ * Get current user info
+ */
+router.get('/me', authenticateToken, async (req, res, next) => {
+  try {
+    const user = req.user;
+
+    res.json({
+      success: true,
+      user: {
+        id: user.id,
+        username: user.username,
+        accountTier: user.account_tier,
+        trustScore: user.trust_score,
+        wannasCreated: user.wannas_created_count,
+        podsJoined: user.pods_joined_count,
+        connectionsMode: user.connections_made_count,
+        createdAt: user.created_at,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/v1/auth/upgrade/email
+ * Upgrade to Tier 2 (add email)
+ */
+router.post('/upgrade/email', authenticateToken, async (req, res, next) => {
+  try {
+    const data = upgradeEmailSchema.parse(req.body);
+    
+    const result = await authService.upgradeToEmail(req.userId!, data.email);
+
+    res.json({
+      success: true,
+      verificationRequired: result.verificationRequired,
+      message: 'Email added! You can now sync across devices.',
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/v1/auth/upgrade/social
+ * Upgrade to Tier 3 (social auth)
+ */
+router.post('/upgrade/social', authenticateToken, async (req, res, next) => {
+  try {
+    const data = upgradeSocialSchema.parse(req.body);
+    
+    // Verify social credential
+    let socialProfile;
+    
+    if (data.provider === 'google') {
+      // Verify Google token
+      const { OAuth2Client } = require('google-auth-library');
+      const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+      
+      const ticket = await client.verifyIdToken({
+        idToken: data.credential,
+        audience: process.env.GOOGLE_CLIENT_ID,
+      });
+      
+      socialProfile = ticket.getPayload();
+    } else if (data.provider === 'apple') {
+      // Verify Apple token
+      const appleSignin = require('apple-signin-auth');
+      
+      socialProfile = await appleSignin.verifyIdToken(data.credential, {
+        audience: process.env.APPLE_CLIENT_ID,
+      });
+    }
+
+    if (!socialProfile) {
+      throw new Error('Failed to verify social credential');
+    }
+
+    const result = await authService.upgradeToSocial(
+      req.userId!,
+      data.provider,
+      socialProfile.sub,
+      socialProfile.email
+    );
+
+    res.json({
+      success: true,
+      message: 'Account upgraded! Full sync enabled.',
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/v1/auth/rate-limit
+ * Check current rate limit status
+ */
+router.get('/rate-limit', authenticateToken, async (req, res, next) => {
+  try {
+    const result = await authService.checkRateLimit(req.userId!);
+
+    res.json({
+      success: true,
+      allowed: result.allowed,
+      remaining: result.remaining,
+      accountTier: req.user.account_tier,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+export default router;
+```
+
+---
+
+## 📱 Mobile Implementation (Expo)
+
+### Environment Variables
+
+```bash
+# .env (mobile)
+API_BASE_URL=http://localhost:3001/api/v1
+```
+
+### Core Auth Store (Zustand)
+
+```typescript
+// store/authStore.ts
+
+import create from 'zustand';
+import * as SecureStore from 'expo-secure-store';
+import { apiService } from '../services/apiService';
+
+interface User {
+  id: string;
+  username: string;
+  accountTier: 'anonymous' | 'email' | 'authenticated';
+  trustScore: number;
+  wannasCreated: number;
+  podsJoined: number;
+  connectionsMade: number;
+}
+
+interface AuthState {
+  // State
+  user: User | null;
+  isAuthenticated: boolean;
+  isLoading: boolean;
+  recoveryPhrase: string | null; // Only during signup flow
+  
+  // Actions
+  initialize: () => Promise<void>;
+  createAccount: (isOver18: boolean, deviceInfo: any) => Promise<void>;
+  recoverAccount: (recoveryPhrase: string, deviceInfo: any) => Promise<void>;
+  logout: () => Promise<void>;
+  refreshToken: () => Promise<void>;
+  upgradeToEmail: (email: string) => Promise<void>;
+  upgradeToSocial: (provider: 'google' | 'apple', credential: string) => Promise<void>;
+  checkRateLimit: () => Promise<{ allowed: boolean; remaining: number }>;
+  clearRecoveryPhrase: () => void;
+}
+
+export const useAuthStore = create<AuthState>((set, get) => ({
+  user: null,
+  isAuthenticated: false,
+  isLoading: true,
+  recoveryPhrase: null,
+
+  initialize: async () => {
+    try {
+      const token = await SecureStore.getItemAsync('authToken');
+      
+      if (token) {
+        // Fetch current user
+        const response = await apiService.get('/auth/me');
+        
+        set({ 
+          user: response.data.user,
+          isAuthenticated: true,
+          isLoading: false
+        });
+      } else {
+        set({ isLoading: false });
+      }
+    } catch (error) {
+      console.error('Initialize error:', error);
+      set({ isLoading: false });
+    }
+  },
+
+  createAccount: async (isOver18: boolean, deviceInfo: any) => {
+    try {
+      const response = await apiService.post('/auth/create-anonymous', {
+        isOver18,
+        deviceInfo,
+      });
+
+      const { userId, username, token, refreshToken, recoveryPhrase, accountTier } = response.data;
+
+      // Store tokens
+      await SecureStore.setItemAsync('authToken', token);
+      await SecureStore.setItemAsync('refreshToken', refreshToken);
+      await SecureStore.setItemAsync('userId', userId);
+
+      set({
+        user: {
+          id: userId,
+          username,
+          accountTier,
+          trustScore: 100,
+          wannasCreated: 0,
+          podsJoined: 0,
+          connectionsMade: 0,
+        },
+        isAuthenticated: true,
+        recoveryPhrase, // Store temporarily to show to user
+      });
+    } catch (error) {
+      throw error;
+    }
+  },
+
+  recoverAccount: async (recoveryPhrase: string, deviceInfo: any) => {
+    try {
+      const response = await apiService.post('/auth/recover', {
+        recoveryPhrase,
+        deviceInfo,
+      });
+
+      const { userId, username, token, refreshToken } = response.data;
+
+      await SecureStore.setItemAsync('authToken', token);
+      await SecureStore.setItemAsync('refreshToken', refreshToken);
+      await SecureStore.setItemAsync('userId', userId);
+
+      // Fetch full user profile
+      const userResponse = await apiService.get('/auth/me');
+
+      set({
+        user: userResponse.data.user,
+        isAuthenticated: true,
+      });
+    } catch (error) {
+      throw error;
+    }
+  },
+
+  logout: async () => {
+    try {
+      const refreshToken = await SecureStore.getItemAsync('refreshToken');
+      
+      if (refreshToken) {
+        await apiService.post('/auth/logout', { refreshToken });
+      }
+    } catch (error) {
+      console.error('Logout error:', error);
+    } finally {
+      // Clear local storage
+      await SecureStore.deleteItemAsync('authToken');
+      await SecureStore.deleteItemAsync('refreshToken');
+      await SecureStore.deleteItemAsync('userId');
+      
+      set({
+        user: null,
+        isAuthenticated: false,
+      });
+    }
+  },
+
+  refreshToken: async () => {
+    try {
+      const refreshToken = await SecureStore.getItemAsync('refreshToken');
+      
+      if (!refreshToken) {
+        throw new Error('No refresh token');
+      }
+
+      const response = await apiService.post('/auth/refresh', { refreshToken });
+      
+      await SecureStore.setItemAsync('authToken', response.data.token);
+    } catch (error) {
+      // Refresh failed - logout
+      await get().logout();
+      throw error;
+    }
+  },
+
+  upgradeToEmail: async (email: string) => {
+    try {
+      await apiService.post('/auth/upgrade/email', { email });
+      
+      // Refresh user data
+      const response = await apiService.get('/auth/me');
+      set({ user: response.data.user });
+    } catch (error) {
+      throw error;
+    }
+  },
+
+  upgradeToSocial: async (provider: 'google' | 'apple', credential: string) => {
+    try {
+      await apiService.post('/auth/upgrade/social', { provider, credential });
+      
+      // Refresh user data
+      const response = await apiService.get('/auth/me');
+      set({ user: response.data.user });
+    } catch (error) {
+      throw error;
+    }
+  },
+
+  checkRateLimit: async () => {
+    const response = await apiService.get('/auth/rate-limit');
+    return {
+      allowed: response.data.allowed,
+      remaining: response.data.remaining,
+    };
+  },
+
+  clearRecoveryPhrase: () => {
+    set({ recoveryPhrase: null });
+  },
+}));
+```
+
+---
+
+### API Service with Auto-Refresh
+
+```typescript
+// services/apiService.ts
+
+import axios from 'axios';
+import * as SecureStore from 'expo-secure-store';
+import { API_BASE_URL } from '@env';
+
+const apiService = axios.create({
+  baseURL: API_BASE_URL,
+  timeout: 10000,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
+
+// Request interceptor - add auth token
+apiService.interceptors.request.use(
+  async (config) => {
+    const token = await SecureStore.getItemAsync('authToken');
+    
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
+
+// Response interceptor - handle token refresh
+apiService.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const originalRequest = error.config;
+
+    // If 401 and not already retried, try to refresh token
+    if (error.response?.status === 401 && !originalRequest._retry) {
+      originalRequest._retry = true;
+
+      try {
+        const refreshToken = await SecureStore.getItemAsync('refreshToken');
+        
+        if (!refreshToken) {
+          throw new Error('No refresh token');
+        }
+
+        // Call refresh endpoint (don't use interceptor)
+        const response = await axios.post(
+          `${API_BASE_URL}/auth/refresh`,
+          { refreshToken }
+        );
+
+        const newToken = response.data.token;
+        
+        // Store new token
+        await SecureStore.setItemAsync('authToken', newToken);
+        
+        // Retry original request with new token
+        originalRequest.headers.Authorization = `Bearer ${newToken}`;
+        return apiService(originalRequest);
+      } catch (refreshError) {
+        // Refresh failed - clear tokens and logout
+        await SecureStore.deleteItemAsync('authToken');
+        await SecureStore.deleteItemAsync('refreshToken');
+        
+        // You might want to navigate to login screen here
+        // navigation.navigate('Auth');
+        
+        return Promise.reject(refreshError);
+      }
+    }
+
+    return Promise.reject(error);
+  }
+);
+
+export { apiService };
+```
+
+---
+
+### Age Gate Screen
+
+```typescript
+// screens/AgeGateScreen.tsx
+
+import React, { useState } from 'react';
+import { View, Text, StyleSheet, Pressable, Platform } from 'react-native';
+import Animated, { 
+  useSharedValue, 
+  useAnimatedStyle, 
+  withRepeat, 
+  withSequence,
+  withTiming 
+} from 'react-native-reanimated';
+import * as Device from 'expo-device';
+import * as Application from 'expo-application';
+import Constants from 'expo-constants';
+import { useAuthStore } from '../store/authStore';
+import { colors } from '../theme/colors';
+
+export const AgeGateScreen = ({ navigation }) => {
+  const [isOver18, setIsOver18] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState('');
+  
+  const createAccount = useAuthStore((state) => state.createAccount);
+
+  // Breathing animation for button
+  const scale = useSharedValue(1);
+
+  React.useEffect(() => {
+    if (isOver18) {
+      scale.value = withRepeat(
+        withSequence(
+          withTiming(1.02, { duration: 1500 }),
+          withTiming(1.0, { duration: 1500 })
+        ),
+        -1,
+        false
+      );
+    } else {
+      scale.value = withTiming(1);
+    }
+  }, [isOver18]);
+
+  const animatedButtonStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: scale.value }],
+  }));
+
+  const handleContinue = async () => {
+    if (!isOver18) {
+      setError('You must be 18 or older to use Iwanna');
+      return;
+    }
+
+    setIsLoading(true);
+    setError('');
+
+    try {
+      // Gather device info
+      const deviceInfo = {
+        platform: Platform.OS,
+        osVersion: Platform.Version.toString(),
+        appVersion: Constants.expoConfig?.version || '1.0.0',
+        deviceModel: Device.modelName || 'Unknown',
+      };
+
+      await createAccount(true, deviceInfo);
+      
+      // Navigate to recovery phrase screen
+      navigation.navigate('RecoveryPhrase');
+    } catch (err: any) {
+      setError(err.response?.data?.message || 'Something went wrong. Try again?');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <View style={styles.container}>
+      {/* Ambient gradient background */}
+      <View style={styles.gradientBackground} />
+
+      <View style={styles.content}>
+        <Text style={styles.title}>Welcome to Iwanna</Text>
+        <Text style={styles.subtitle}>
+          Where spontaneous connections happen ✨
+        </Text>
+
+        <View style={styles.ageCheckContainer}>
+          <Pressable
+            style={[
+              styles.checkbox,
+              isOver18 && styles.checkboxChecked
+            ]}
+            onPress={() => setIsOver18(!isOver18)}
+          >
+            {isOver18 && <Text style={styles.checkmark}>✓</Text>}
+          </Pressable>
+          
+          <Text style={styles.checkboxLabel}>
+            I'm 18 years or older
+          </Text>
+        </View>
+
+        {error ? (
+          <Text style={styles.error}>{error}</Text>
+        ) : null}
+
+        <Animated.View style={[styles.buttonWrapper, animatedButtonStyle]}>
+          <Pressable
+            style={[
+              styles.button,
+              !isOver18 && styles.buttonDisabled,
+              isLoading && styles.buttonLoading
+            ]}
+            onPress={handleContinue}
+            disabled={!isOver18 || isLoading}
+          >
+            <Text style={styles.buttonText}>
+              {isLoading ? 'Creating your vibe...' : "Let's go"}
+            </Text>
+          </Pressable>
+        </Animated.View>
+
+        <Text style={styles.disclaimer}>
+          By continuing, you agree to our Terms of Service and Privacy Policy
+        </Text>
+      </View>
+    </View>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
+  gradientBackground: {
+    position: 'absolute',
+    width: '100%',
+    height: '100%',
+    opacity: 0.3,
+    // Add gradient here with expo-linear-gradient
+  },
+  content: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 32,
+  },
+  title: {
+    fontSize: 32,
+    fontWeight: '700',
+    color: colors.text.primary,
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  subtitle: {
+    fontSize: 18,
+    color: colors.text.secondary,
+    marginBottom: 48,
+    textAlign: 'center',
+  },
+  ageCheckContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 32,
+  },
+  checkbox: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    borderWidth: 2,
+    borderColor: colors.text.secondary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  checkboxChecked: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  checkmark: {
+    color: colors.text.primary,
+    fontSize: 20,
+    fontWeight: '700',
+  },
+  checkboxLabel: {
+    fontSize: 16,
+    color: colors.text.primary,
+  },
+  error: {
+    color: colors.error,
+    fontSize: 14,
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  buttonWrapper: {
+    width: '100%',
+  },
+  button: {
+    backgroundColor: colors.primary,
+    paddingVertical: 18,
+    paddingHorizontal: 48,
+    borderRadius: 16,
+    alignItems: 'center',
+  },
+  buttonDisabled: {
+    opacity: 0.4,
+  },
+  buttonLoading: {
+    opacity: 0.7,
+  },
+  buttonText: {
+    color: colors.text.primary,
+    fontSize: 18,
+    fontWeight: '600',
+  },
+  disclaimer: {
+    marginTop: 24,
+    fontSize: 12,
+    color: colors.text.secondary,
+    textAlign: 'center',
+    paddingHorizontal: 16,
+  },
+});
+```
+
+---
+
+### Recovery Phrase Screen
+
+```typescript
+// screens/RecoveryPhraseScreen.tsx
+
+import React, { useState } from 'react';
+import { View, Text, StyleSheet, Pressable, Alert } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
+import * as Haptics from 'expo-haptics';
+import { useAuthStore } from '../store/authStore';
+import { colors } from '../theme/colors';
+
+export const RecoveryPhraseScreen = ({ navigation }) => {
+  const recoveryPhrase = useAuthStore((state) => state.recoveryPhrase);
+  const clearRecoveryPhrase = useAuthStore((state) => state.clearRecoveryPhrase);
+  const [saved, setSaved] = useState(false);
+
+  const handleCopy = async () => {
+    if (recoveryPhrase) {
+      await Clipboard.setStringAsync(recoveryPhrase);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert('Copied!', 'Recovery phrase copied to clipboard');
+    }
+  };
+
+  const handleContinue = () => {
+    if (!saved) {
+      Alert.alert(
+        'Are you sure?',
+        "You won't be able to recover your account without this phrase",
+        [
+          { text: 'Go back', style: 'cancel' },
+          { 
+            text: 'I understand', 
+            onPress: () => {
+              clearRecoveryPhrase();
+              navigation.navigate('Main');
+            }
+          }
+        ]
+      );
+    } else {
+      clearRecoveryPhrase();
+      navigation.navigate('Main');
+    }
+  };
+
+  return (
+    <View style={styles.container}>
+      <View style={styles.content}>
+        <Text style={styles.title}>Save your recovery phrase</Text>
+        
+        <Text style={styles.warning}>
+          ⚠️ This is the ONLY way to recover your account on a new device.
+          We can't help if you lose it.
+        </Text>
+
+        <View style={styles.phraseContainer}>
+          <Text style={styles.phrase} selectable>
+            {recoveryPhrase}
+          </Text>
+        </View>
+
+        <Pressable style={styles.copyButton} onPress={handleCopy}>
+          <Text style={styles.copyButtonText}>Copy to clipboard</Text>
+        </Pressable>
+
+        <View style={styles.checkboxContainer}>
+          <Pressable
+            style={[styles.checkbox, saved && styles.checkboxChecked]}
+            onPress={() => setSaved(!saved)}
+          >
+            {saved && <Text style={styles.checkmark}>✓</Text>}
+          </Pressable>
+          <Text style={styles.checkboxLabel}>
+            I've saved my recovery phrase safely
+          </Text>
+        </View>
+
+        <Pressable
+          style={[styles.continueButton, !saved && styles.continueButtonDisabled]}
+          onPress={handleContinue}
+        >
+          <Text style={styles.continueButtonText}>Continue</Text>
+        </Pressable>
+
+        <Text style={styles.tip}>
+          💡 Tip: Write it down on paper or save in a password manager
+        </Text>
+      </View>
+    </View>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
+  content: {
+    flex: 1,
+    paddingHorizontal: 24,
+    paddingTop: 60,
+  },
+  title: {
+    fontSize: 28,
+    fontWeight: '700',
+    color: colors.text.primary,
+    marginBottom: 16,
+  },
+  warning: {
+    fontSize: 16,
+    color: colors.error,
+    marginBottom: 24,
+    lineHeight: 24,
+  },
+  phraseContainer: {
+    backgroundColor: colors.surface,
+    padding: 20,
+    borderRadius: 16,
+    marginBottom: 16,
+  },
+  phrase: {
+    fontSize: 16,
+    color: colors.text.primary,
+    lineHeight: 24,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  copyButton: {
+    backgroundColor: colors.primary,
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginBottom: 32,
+  },
+  copyButtonText: {
+    color: colors.text.primary,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  checkboxContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  checkbox: {
+    width: 28,
+    height: 28,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: colors.text.secondary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  checkboxChecked: {
+    backgroundColor: colors.success,
+    borderColor: colors.success,
+  },
+  checkmark: {
+    color: colors.text.primary,
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  checkboxLabel: {
+    fontSize: 15,
+    color: colors.text.primary,
+    flex: 1,
+  },
+  continueButton: {
+    backgroundColor: colors.primary,
+    paddingVertical: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  continueButtonDisabled: {
+    opacity: 0.4,
+  },
+  continueButtonText: {
+    color: colors.text.primary,
+    fontSize: 18,
+    fontWeight: '600',
+  },
+  tip: {
+    fontSize: 14,
+    color: colors.text.secondary,
+    textAlign: 'center',
+    fontStyle: 'italic',
+  },
+});
+```
+
+---
+
+### Account Recovery Screen
+
+```typescript
+// screens/AccountRecoveryScreen.tsx
+
+import React, { useState } from 'react';
+import { 
+  View, 
+  Text, 
+  TextInput, 
+  StyleSheet, 
+  Pressable,
+  KeyboardAvoidingView,
+  Platform 
+} from 'react-native';
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withSequence,
+  withTiming,
+} from 'react-native-reanimated';
+import * as Haptics from 'expo-haptics';
+import * as Device from 'expo-device';
+import * as Application from 'expo-application';
+import Constants from 'expo-constants';
+import { useAuthStore } from '../store/authStore';
+import { colors } from '../theme/colors';
+
+export const AccountRecoveryScreen = ({ navigation }) => {
+  const [phrase, setPhrase] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState('');
+  
+  const recoverAccount = useAuthStore((state) => state.recoverAccount);
+  const translateX = useSharedValue(0);
+
+  const shakeAnimation = () => {
+    translateX.value = withSequence(
+      withTiming(-10, { duration: 50 }),
+      withTiming(10, { duration: 50 }),
+      withTiming(-10, { duration: 50 }),
+      withTiming(0, { duration: 50 })
+    );
+  };
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: translateX.value }],
+  }));
+
+  const handleRecover = async () => {
+    if (!phrase.trim()) {
+      setError('Please enter your recovery phrase');
+      shakeAnimation();
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      return;
+    }
+
+    setIsLoading(true);
+    setError('');
+
+    try {
+      const deviceInfo = {
+        platform: Platform.OS,
+        osVersion: Platform.Version.toString(),
+        appVersion: Constants.expoConfig?.version || '1.0.0',
+        deviceModel: Device.modelName || 'Unknown',
+      };
+
+      await recoverAccount(phrase.trim(), deviceInfo);
+      
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      navigation.navigate('Main');
+    } catch (err: any) {
+      setError(err.response?.data?.message || 'Recovery failed. Check your phrase and try again.');
+      shakeAnimation();
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <KeyboardAvoidingView 
+      style={styles.container}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
+      <View style={styles.content}>
+        <Text style={styles.title}>Recover your account</Text>
+        <Text style={styles.subtitle}>
+          Enter the 12-word recovery phrase you saved when creating your account
+        </Text>
+
+        <Animated.View style={[styles.inputContainer, animatedStyle]}>
+          <TextInput
+            style={styles.input}
+            placeholder="word1 word2 word3 word4..."
+            placeholderTextColor={colors.text.secondary}
+            value={phrase}
+            onChangeText={setPhrase}
+            multiline
+            numberOfLines={3}
+            autoCapitalize="none"
+            autoCorrect={false}
+            autoFocus
+          />
+        </Animated.View>
+
+        {error ? (
+          <Text style={styles.error}>{error}</Text>
+        ) : null}
+
+        <Pressable
+          style={[styles.button, isLoading && styles.buttonLoading]}
+          onPress={handleRecover}
+          disabled={isLoading}
+        >
+          <Text style={styles.buttonText}>
+            {isLoading ? 'Recovering...' : 'Recover account'}
+          </Text>
+        </Pressable>
+
+        <Pressable 
+          style={styles.backButton}
+          onPress={() => navigation.goBack()}
+        >
+          <Text style={styles.backButtonText}>Back</Text>
+        </Pressable>
+      </View>
+    </KeyboardAvoidingView>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
+  content: {
+    flex: 1,
+    paddingHorizontal: 24,
+    paddingTop: 60,
+  },
+  title: {
+    fontSize: 28,
+    fontWeight: '700',
+    color: colors.text.primary,
+    marginBottom: 12,
+  },
+  subtitle: {
+    fontSize: 16,
+    color: colors.text.secondary,
+    marginBottom: 32,
+    lineHeight: 24,
+  },
+  inputContainer: {
+    marginBottom: 16,
+  },
+  input: {
+    backgroundColor: colors.surface,
+    padding: 16,
+    borderRadius: 12,
+    fontSize: 15,
+    color: colors.text.primary,
+    minHeight: 100,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    textAlignVertical: 'top',
+  },
+  error: {
+    color: colors.error,
+    fontSize: 14,
+    marginBottom: 16,
+  },
+  button: {
+    backgroundColor: colors.primary,
+    paddingVertical: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  buttonLoading: {
+    opacity: 0.7,
+  },
+  buttonText: {
+    color: colors.text.primary,
+    fontSize: 18,
+    fontWeight: '600',
+  },
+  backButton: {
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  backButtonText: {
+    color: colors.text.secondary,
+    fontSize: 16,
+  },
+});
+```
+
+---
+
+## 🎨 Theme Configuration
+
+```typescript
+// theme/colors.ts
+
+export const colors = {
+  // Primary colors
+  primary: '#4A6CF7',        // Pulse Blue
+  secondary: '#FF9A76',      // Peach Glow
+  
+  // Backgrounds
+  background: '#0E0F1A',     // Midnight Soft
+  surface: '#1B1C26',        // Card backgrounds
+  
+  // Text
+  text: {
+    primary: '#F8F9FC',      // Main text
+    secondary: '#A3A8C3',    // Subtle text
+  },
+  
+  // Status colors
+  success: '#5EF2B5',        // Mint Glow
+  error: '#FF5F5F',          // Coral Red
+  warning: '#FFB800',        // Amber
+  
+  // Gradients

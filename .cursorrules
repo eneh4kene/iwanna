@@ -1,0 +1,780 @@
+# IWANNA PROJECT - SYSTEM PROMPT FOR CURSOR AI
+
+## Project Identity
+You are building **Iwanna**, a revolutionary mobile-first social connection platform that connects people through spontaneous moments, not profiles or plans. This is NOT another Meetup clone or dating app - it's a real-time connection engine for human impulse.
+
+## Core Philosophy
+"Iwanna connects people through moments of impulse, curiosity, and shared energy — not rigid plans."
+
+Every feature, every line of code, every UX decision must serve **spontaneity, humanity, and effortless connection**.
+
+---
+
+## Product Vision
+
+### What Iwanna Does
+- Users post what they feel like doing RIGHT NOW ("I wanna grab coffee", "I wanna brainstorm startup ideas")
+- AI instantly matches them with 2-4 compatible people nearby (0.5-5 miles)
+- Forms temporary "pods" (small groups) with a 3-hour lifespan
+- Provides real-time chat with AI assistance (venue suggestions, icebreakers)
+- Auto-generates personalized "vibe summaries" when pods end
+- No profiles, no swiping, no permanent connections unless both choose
+
+### Personality of the Product
+**Iwanna feels ALIVE.**
+- The UI pulses softly, breathes, and responds to touch with organic motion
+- Text appears with gentle animation, never harshly
+- AI speaks conversationally — warm, human, concise (never robotic, never verbose)
+- Every interaction feels like the app is responding to your energy, not just your input
+- Micro-animations create a sense of presence: the city breathing, vibes appearing, connections forming
+- The experience should feel like a living organism, not a static interface
+
+### Core User Flow (MVP)
+1. User opens app → sees "What do you wanna do right now?"
+2. Types intent (or speaks) + optional mood emoji
+3. AI parses intent, finds nearby matches, creates pod
+4. Instant group chat opens with 2-4 people
+5. AI suggests meetup spot halfway between everyone
+6. After 3 hours, pod expires, users get reflective summary
+7. Option to reconnect or let it fade naturally
+
+---
+
+## Technical Architecture
+
+### Tech Stack
+**Mobile App (Primary Product)**
+- Expo SDK 50+ with TypeScript
+- Expo Router or React Navigation (stack + tab navigation)
+- Redux Toolkit or Zustand (global state)
+- Socket.io client (real-time chat/presence)
+- React Query (server state & caching)
+- expo-location (geolocation with permissions)
+- react-native-maps (map views)
+- expo-notifications (push notifications)
+- expo-secure-store (encrypted local storage)
+- react-native-reanimated (spring physics animations)
+- expo-haptics (tactile feedback)
+
+**Backend (API & Services)**
+- Node.js + Express with TypeScript
+- PostgreSQL (relational: users, pods, connections)
+- Redis (real-time: active wannas, presence, caching)
+- Pinecone or Weaviate (vector embeddings for semantic matching)
+- Socket.io (WebSocket server)
+- OpenAI GPT-4 or Anthropic Claude (intent parsing, vibe generation)
+- Bull or BullMQ (job queue for matching)
+- PostGIS extension (geospatial queries)
+
+**Infrastructure**
+- AWS/GCP/Railway for hosting
+- CloudFlare for CDN
+- Sentry for error tracking
+- Mixpanel/Amplitude for analytics
+
+---
+
+## Database Schema (Core Tables)
+
+### users
+```sql
+id: UUID (PK)
+phone_number: VARCHAR(20) UNIQUE
+name: VARCHAR(100)
+created_at: TIMESTAMP
+last_active: TIMESTAMP
+preferences: JSONB (comfort settings, notifications)
+status: ENUM('active', 'suspended', 'deleted')
+```
+
+### wannas
+```sql
+id: UUID (PK)
+user_id: UUID (FK)
+raw_input: TEXT
+intent: JSONB (activity, category, energy_level, vibe_keywords, etc.)
+embedding: VECTOR(1536) -- for semantic similarity
+location: GEOGRAPHY(POINT) -- PostGIS
+mood_tag: VARCHAR(20)
+status: ENUM('active', 'matched', 'expired')
+created_at: TIMESTAMP
+expires_at: TIMESTAMP
+```
+
+### pods
+```sql
+id: UUID (PK)
+status: ENUM('forming', 'active', 'completed', 'expired')
+vibe_summary: TEXT (AI-generated)
+collective_intent: JSONB
+centroid_location: GEOGRAPHY(POINT)
+suggested_venues: JSONB
+created_at: TIMESTAMP
+expires_at: TIMESTAMP (3 hours from creation)
+completed_at: TIMESTAMP
+```
+
+### pod_members
+```sql
+id: UUID (PK)
+pod_id: UUID (FK)
+user_id: UUID (FK)
+wanna_id: UUID (FK)
+joined_at: TIMESTAMP
+status: ENUM('active', 'left', 'removed')
+marked_complete: BOOLEAN
+```
+
+### chat_messages
+```sql
+id: UUID (PK)
+pod_id: UUID (FK)
+user_id: UUID (FK) -- 'ai_assistant' for AI messages
+content: TEXT
+message_type: ENUM('user', 'system', 'ai')
+metadata: JSONB (actions, location data, etc.)
+created_at: TIMESTAMP
+```
+
+### vibe_summaries
+```sql
+id: UUID (PK)
+user_id: UUID (FK)
+pod_id: UUID (FK)
+summary_text: TEXT (AI-generated reflection)
+connections_made: INTEGER
+generated_at: TIMESTAMP
+```
+
+---
+
+## API Architecture
+
+### REST Endpoints
+```
+POST   /api/auth/send-code          # Send SMS verification
+POST   /api/auth/verify-code        # Verify & create session
+GET    /api/auth/me                 # Get current user
+
+POST   /api/wannas                  # Create new wanna
+GET    /api/wannas/active           # Get user's active wannas
+DELETE /api/wannas/:id              # Cancel wanna
+
+GET    /api/pods/active             # Get user's active pods
+GET    /api/pods/:id                # Get pod details
+POST   /api/pods/:id/leave          # Leave pod
+POST   /api/pods/:id/complete       # Mark pod as complete
+
+GET    /api/pods/:id/messages       # Get chat history
+POST   /api/pods/:id/messages       # Send message (fallback)
+
+GET    /api/summaries               # Get user's vibe summaries
+GET    /api/summaries/:id           # Get specific summary
+
+POST   /api/reports                 # Report user/content
+```
+
+### WebSocket Events
+```javascript
+// Client → Server
+'join_pod': { pod_id, user_id }
+'leave_pod': { pod_id, user_id }
+'send_message': { pod_id, user_id, message }
+'typing': { pod_id, user_id }
+'location_update': { user_id, location }
+
+// Server → Client
+'pod_formed': { pod }
+'match_found': { pod_id, members, vibe_summary }
+'new_message': { message }
+'user_joined': { user_id }
+'user_left': { user_id }
+'user_typing': { user_id }
+'pod_expired': { pod_id, summary }
+'ai_action_response': { action, data }
+```
+
+---
+
+## AI Integration Points
+
+### 1. Intent Parsing (GPT-4/Claude)
+**Input:** User's raw text + mood emoji
+**Output:** Structured JSON
+```json
+{
+  "activity": "coffee",
+  "category": "food_social",
+  "energy_level": "medium",
+  "social_preference": "small_group",
+  "time_sensitivity": "now",
+  "location_flexibility": "neighborhood",
+  "vibe_keywords": ["casual", "conversation", "relaxed"],
+  "emotional_tone": "curious"
+}
+```
+
+### 2. Semantic Embeddings (OpenAI text-embedding-3-small)
+- Convert raw input to 1536-dim vector
+- Store in vector database
+- Use cosine similarity for matching
+
+### 3. Vibe Summary Generation (GPT-4)
+**Input:** Pod data (members' intents, chat excerpt, duration)
+**Output:** Warm, 1-2 sentence description
+Example: "Casual coffee + conversation" or "Creative souls wanting to jam"
+
+### 4. Personal Reflection (GPT-4)
+**Input:** User's pod history, current pod outcome
+**Output:** 2-3 sentence personalized insight
+Example: "You connected with 2 new people who share your creative curiosity. Your top vibe this week: collaborative energy."
+
+### 5. AI Chat Assistant (GPT-3.5-turbo)
+- Suggests meetup venues
+- Provides icebreakers when chat stalls
+- Answers pod-related questions
+
+---
+
+## Matching Algorithm (Critical Logic)
+
+### Scoring Formula
+```javascript
+compositeScore = 
+  (0.35 × semantic_similarity) +      // Intent overlap
+  (0.25 × geographic_proximity) +     // Distance score
+  (0.15 × energy_alignment) +         // Energy level match
+  (0.15 × temporal_overlap) +         // Timing compatibility
+  (0.10 × vibe_compatibility)         // Keyword overlap
+
+// Threshold: 0.65 minimum to form pod
+// Ideal pod size: 3-4 people
+// Max pod size: 5 people
+```
+
+### Matching Process
+1. User creates wanna → added to Redis + PostgreSQL
+2. Queued for matching (async job)
+3. Find candidates within 5-mile radius (GEORADIUS)
+4. Score each candidate using composite formula
+5. If viable matches exist (score ≥ 0.65):
+   - Form pod with top 2-4 matches
+   - Generate vibe summary
+   - Suggest venue at geographic centroid
+   - Initialize chat
+   - Notify all members
+6. If no matches:
+   - Create "pod seed" (waiting state)
+   - Requeue for matching in 60 seconds
+   - Show user "We're finding your vibe..."
+
+---
+
+## Code Quality Standards
+
+### TypeScript Requirements
+- All files must use TypeScript strict mode
+- Explicit return types for all functions
+- Proper interface/type definitions for all data structures
+- No `any` types unless absolutely necessary (use `unknown` instead)
+
+### Component Structure (React Native)
+```typescript
+// Proper component template
+import React, { useState, useEffect } from 'react';
+import { View, Text, StyleSheet } from 'react-native';
+
+interface ComponentProps {
+  title: string;
+  onPress?: () => void;
+}
+
+export const Component: React.FC<ComponentProps> = ({ title, onPress }) => {
+  // Hooks at top
+  const [state, setState] = useState<string>('');
+  
+  // Effects
+  useEffect(() => {
+    // logic
+  }, []);
+  
+  // Event handlers
+  const handlePress = () => {
+    onPress?.();
+  };
+  
+  // Render
+  return (
+    <View style={styles.container}>
+      <Text>{title}</Text>
+    </View>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+  },
+});
+```
+
+### Backend Structure (Node.js)
+```typescript
+// Proper route handler template
+import { Request, Response, NextFunction } from 'express';
+import { z } from 'zod'; // Use Zod for validation
+
+const createWannaSchema = z.object({
+  text: z.string().min(1).max(200),
+  mood: z.string().optional(),
+  location: z.object({
+    lat: z.number(),
+    lng: z.number(),
+  }),
+});
+
+export const createWanna = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    // Validate input
+    const data = createWannaSchema.parse(req.body);
+    
+    // Business logic
+    const wanna = await wannaService.create(req.user.id, data);
+    
+    // Response
+    res.status(201).json({ success: true, data: wanna });
+  } catch (error) {
+    next(error); // Pass to error handler
+  }
+};
+```
+
+### Error Handling
+- Always use try-catch for async operations
+- Return meaningful error messages
+- Use custom error classes (AppError, ValidationError, etc.)
+- Never expose internal errors to client
+
+### Performance Rules
+- Lazy load components where possible
+- Memoize expensive computations (useMemo, useCallback)
+- Virtualize long lists (FlatList with proper optimization)
+- Debounce user input (search, typing indicators)
+- Cache API responses with React Query
+- Use Redis for frequently accessed data
+
+---
+
+## UX/UI Principles
+
+### The Living Interface Philosophy
+**Everything Must Feel Alive**
+- Static screens are forbidden - there's always subtle motion
+- Buttons breathe (gentle scale pulse on idle)
+- Text fades in gracefully, never pops
+- Backgrounds have ambient gradients that shift slowly
+- Touch responses feel organic (ripple effects, spring physics)
+- Loading states are never spinners - use pulsing glows, breathing animations
+- Success moments celebrate with particle effects or gentle bursts
+
+### Design System
+- **Typography:** 
+  - Headings: System font (SF Pro iOS, Roboto Android) with generous spacing
+  - Body: 16px base, 1.5 line height, slightly loose tracking for breathability
+  - Never all-caps (feels shouty) - use sentence case
+  - Text animates in with gentle fade + slight upward movement (10px)
+  
+- **Colors:**
+  - Primary: Warm living gradient (coral → soft orange → peachy pink)
+  - Background: Not pure white - use warm off-white (#FEFCFB) or deep charcoal for dark mode
+  - Accent colors pulse subtly (0.9-1.1 opacity cycle over 3 seconds)
+  - Text: Never pure black - use warm dark gray (#2A2523)
+  - Status indicators glow softly (not harsh dots)
+  
+- **Spacing:** 
+  - 8px base unit (8, 16, 24, 32, 48)
+  - Extra breathing room around text (1.2x standard padding)
+  - Generous margins - the UI never feels cramped
+  
+- **Animations:** 
+  - Duration: 200-400ms (300ms sweet spot)
+  - Easing: spring physics (react-native-reanimated)
+  - All animations use native driver for 60fps
+  - Entrance: fade + slide (subtle, 10-20px)
+  - Exit: fade + scale down slightly
+  - Hover/Press: gentle scale (0.95-1.05)
+  - Background pulses: 3-5 second cycles
+  
+- **Motion Design:**
+  - Idle states have micro-motion (breathing)
+  - Active states intensify animation slightly
+  - Transitions between screens feel fluid (shared element transitions)
+  - Haptic feedback on key interactions (subtle taps, not harsh vibrations)
+
+### AI Personality in Text
+**The AI is your warm, intuitive friend - never a robotic assistant**
+
+❌ **NEVER write like this:**
+```
+"Your request has been processed. The system has identified 3 potential matches 
+in your vicinity. Please review the options below and select your preference."
+```
+
+✅ **ALWAYS write like this:**
+```
+"Found 3 people nearby who feel the same way ✨"
+```
+
+**Rules for AI-Generated Text:**
+- Maximum 2 sentences (usually just 1)
+- Use contractions (we're, you're, let's)
+- Active voice only
+- Simple words (never "utilize" - always "use")
+- Emoji used sparingly but meaningfully (✨ 👋 🌟 - never 🤖 ⚙️ 📊)
+- Address the user as "you" not "the user"
+- Speak in present tense, immediate
+- No corporate jargon, no tech speak to users
+- Questions feel genuine, not scripted
+
+**Examples:**
+- Matching: "We're finding your vibe..." (not "Searching for compatible users")
+- No matches yet: "Hang tight — someone nearby might feel the same soon" (not "No results found. Please try again.")
+- Pod formed: "3 others nearby also wanna chill ☕" (not "Match successful. Group chat initialized.")
+- AI assistant: "Want me to suggest a spot halfway for everyone?" (not "Would you like me to provide location recommendations?")
+- Summary: "You connected with 2 creative minds today" (not "Session completed. 2 connections established.")
+
+### Screen States
+Every screen must handle these states **with personality**:
+
+1. **Loading:** 
+   - Breathing glow animation around the app icon or central element
+   - Text: "Finding your vibe..." or "Tuning in..." (changes dynamically)
+   - Never just a spinner
+   - Subtle particle effects drifting upward
+   
+2. **Empty:** 
+   - Warm illustration (not stark)
+   - Text: "No one nearby yet — be the first!" 
+   - Clear action CTA with a pulse
+   - Friendly tone, never negative
+   
+3. **Error:** 
+   - Gentle alert (not harsh red)
+   - Text: "Hmm, something's not quite right. Mind trying again?" 
+   - Retry button that gently bounces
+   - Optional "Need help?" link
+   
+4. **Success:** 
+   - Celebration moment (confetti particles, glow burst)
+   - Haptic feedback (light impact)
+   - Smooth transition to next state
+   - Text: "You're in! ✨"
+
+### Micro-Interactions That Bring Life
+
+1. **Input fields:**
+   - Border glows softly when focused
+   - Placeholder text fades gracefully
+   - Character count appears with gentle slide-in
+   
+2. **Buttons:**
+   - Idle: subtle breathing animation (scale 1.0-1.02)
+   - Hover/Press: scale to 0.97 with slight shadow increase
+   - Disabled: 50% opacity with no animation (feels asleep)
+   
+3. **Cards (Pods, Vibes):**
+   - Float gently (subtle up/down motion, 2px over 4s)
+   - Glow on edges that pulses with opacity
+   - Press: push down slightly + glow intensifies
+   
+4. **Lists:**
+   - Stagger entrance animations (50ms delay between items)
+   - Swipe gestures feel fluid (spring physics)
+   - Pull-to-refresh shows organic stretching animation
+   
+5. **Notifications/Toasts:**
+   - Slide in from top with bounce
+   - Auto-dismiss with fade + slide up
+   - Icons pulse gently while visible
+
+### Accessibility
+- All animations respect `prefers-reduced-motion`
+- High contrast mode available
+- Screen reader labels sound natural ("Join pod" not "Button: Join pod action")
+- All touchable areas minimum 44×44px
+- Haptics enhance but never required for feedback
+- Support dynamic type sizing (text scales up to 200%)
+
+### The "Alive Test"
+Before shipping any screen, ask:
+1. If I left this screen open, would it look frozen or alive?
+2. Does touching anything feel responsive and organic?
+3. Would someone say "wow, this feels different" or "this is just another app"?
+4. Do transitions between states feel natural or jarring?
+5. Does the AI text sound like a friend or a robot?
+
+**If any answer is wrong, iterate until it passes.**
+
+---
+
+## Development Workflow
+
+### Git Commit Messages
+```
+feat: add pod expiration logic
+fix: resolve chat message ordering issue
+refactor: optimize matching algorithm
+docs: update API documentation
+test: add unit tests for intent parsing
+```
+
+### File Naming
+- Components: `PascalCase.tsx` (e.g., `PodCard.tsx`)
+- Hooks: `camelCase.ts` (e.g., `useWanna.ts`)
+- Utils: `camelCase.ts` (e.g., `matchingAlgorithm.ts`)
+- Types: `types.ts` or `ComponentName.types.ts`
+
+### Folder Structure
+```
+mobile/
+├── src/
+│   ├── screens/          # Screen components
+│   ├── components/       # Reusable UI components
+│   ├── navigation/       # Navigation configuration
+│   ├── hooks/            # Custom hooks
+│   ├── services/         # API calls, Socket.io
+│   ├── store/            # Redux/Zustand state
+│   ├── utils/            # Helper functions
+│   ├── types/            # TypeScript types
+│   ├── constants/        # App constants
+│   └── assets/           # Images, fonts
+│
+backend/
+├── src/
+│   ├── routes/           # Express routes
+│   ├── controllers/      # Request handlers
+│   ├── services/         # Business logic
+│   ├── models/           # Database models
+│   ├── middleware/       # Express middleware
+│   ├── utils/            # Helper functions
+│   ├── config/           # Configuration
+│   ├── types/            # TypeScript types
+│   └── jobs/             # Background jobs
+```
+
+---
+
+## Critical Constraints
+
+### What to ALWAYS Do
+✅ Use TypeScript with strict types
+✅ Validate all user input (Zod on backend)
+✅ Handle loading/error states explicitly
+✅ Write self-documenting code with clear variable names
+✅ Use async/await (never raw Promises)
+✅ Implement proper error boundaries
+✅ Add loading indicators for all async actions
+✅ Use environment variables for secrets
+✅ Implement request rate limiting
+✅ Cache aggressively but invalidate properly
+
+### What to NEVER Do
+❌ Use `any` type without strong justification
+❌ Commit console.logs to production
+❌ Store sensitive data in AsyncStorage unencrypted
+❌ Make synchronous blocking calls
+❌ Ignore TypeScript errors
+❌ Hardcode API URLs or keys
+❌ Create memory leaks (unsubscribe, cleanup effects)
+❌ Use inline styles in JSX (use StyleSheet.create)
+❌ Mutate state directly (use proper state updates)
+❌ Skip input validation
+
+---
+
+## Security Requirements
+
+### Authentication
+- Phone number + SMS OTP verification
+- JWT tokens (access: 15min, refresh: 7 days)
+- Store tokens in Keychain (iOS) / Keystore (Android)
+- Automatic token refresh before expiration
+
+### Data Protection
+- Encrypt sensitive data at rest
+- Use HTTPS for all API calls
+- Sanitize all user input
+- Rate limit API endpoints
+- Implement CORS properly
+- Hash/salt any stored credentials
+
+### Privacy
+- Minimal data collection
+- Clear permission requests
+- Location data only when app active
+- Option to delete account + all data
+- No sharing data with third parties
+
+---
+
+## Performance Targets
+
+### Mobile App
+- App launch: < 2 seconds to interactive
+- Screen transitions: < 300ms
+- API responses: < 500ms (p95)
+- Chat message delivery: < 100ms
+- Bundle size: < 30MB
+- Frame rate: 60fps for animations
+
+### Backend
+- API latency: < 200ms (p95)
+- Matching time: < 3 seconds
+- Database queries: < 100ms
+- WebSocket message latency: < 50ms
+- Handle 1000 concurrent users (MVP)
+- Scale to 100K users (Phase 2)
+
+---
+
+## Testing Strategy
+
+### Unit Tests
+- All utility functions
+- Matching algorithm logic
+- Intent parsing validation
+- State management reducers
+
+### Integration Tests
+- API endpoints
+- WebSocket events
+- Database operations
+- AI service calls
+
+### E2E Tests (Detox)
+- Critical user flows:
+  - Create wanna → get matched → chat → receive summary
+  - Authentication flow
+  - Leave pod gracefully
+
+---
+
+## MVP Feature Scope (Phase 1)
+
+### ✅ INCLUDED
+- Phone auth (SMS OTP)
+- Create wanna (text input + mood emoji)
+- AI intent parsing
+- Geographic + semantic matching
+- Pod formation (2-5 people)
+- Real-time chat
+- AI venue suggestions
+- Pod expiration (3 hours)
+- Vibe summaries
+- Push notifications (match found, new message)
+- Basic profile (name only)
+
+### ❌ DEFERRED (Post-MVP)
+- AR moments
+- Energy score gamification
+- Social concierge AI
+- Micro-social maps
+- Local business API
+- User blocking/reporting (basic version included)
+- Friend connections
+- Pod history browsing
+
+---
+
+## Context Awareness
+
+When generating code:
+1. **Always ask:** "Does this serve spontaneous human connection?"
+2. **Then ask:** "Does this feel ALIVE?" (breathing animations, conversational AI, organic responses)
+3. **Prioritize:** Speed, simplicity, emotional resonance, fluid motion
+4. **Avoid:** Over-engineering, unnecessary complexity, feature bloat, static interfaces, robotic language
+5. **Remember:** Users want to feel connected and energized, not overwhelmed or instructed
+6. **Check:** Does this work smoothly on a phone held in one hand?
+7. **Test:** If I interact with this, does it feel responsive and warm or cold and mechanical?
+
+**The Alive Checklist:**
+- ✅ Does the UI have subtle motion when idle?
+- ✅ Do interactions respond with organic animations?
+- ✅ Does the AI text sound like a friend?
+- ✅ Would this make someone smile or feel energy?
+- ✅ Does it respect reduced-motion preferences?
+
+---
+
+## Tone & Language
+
+### In Code Comments
+- Clear, concise, explain WHY not WHAT
+- Use present tense ("Matches users" not "Will match users")
+- Reference business logic when non-obvious
+
+### In User-Facing Text
+- Warm, human, conversational - like texting a friend
+- Active voice, simple words, contractions
+- Maximum 1-2 sentences (brevity is warmth)
+- Examples: 
+  - "Let's go" not "Submit"
+  - "Your vibe" not "Your profile"
+  - "Found 3 people nearby" not "3 matches have been located"
+  - "Want me to suggest a spot?" not "Would you like location recommendations?"
+- Emoji sparingly but meaningfully 👋 ✨ 🌟
+- Never robotic, never verbose, never corporate
+- Read it aloud - if it sounds stiff, rewrite it
+
+---
+
+## Success Metrics (To Inform Decisions)
+
+### User Engagement
+- % of wannas that result in pods
+- Average time to match
+- Chat messages per pod
+- % of users who return within 7 days
+
+### Product Health
+- Pod completion rate
+- Average pod rating (if implemented)
+- Time from wanna creation to meetup
+- % of users who reconnect after pods
+
+### Technical Health
+- API error rate < 0.1%
+- App crash rate < 0.5%
+- Average API response time
+- WebSocket connection stability
+
+---
+
+## Final Directive
+
+You are building something **genuinely new** — not iterating on existing patterns. Every decision should ask: "Does this make spontaneous human connection feel more magical, more effortless, more alive?"
+
+**Iwanna must feel ALIVE:**
+- The interface breathes and pulses softly
+- Animations use spring physics, not linear motion
+- AI speaks warmly and briefly, never robotically
+- Every tap feels organic, never mechanical
+- The experience energizes users, doesn't drain them
+
+When in doubt:
+1. Choose simplicity over features
+2. Choose emotional impact over technical cleverness  
+3. Choose user delight over architectural purity
+4. Choose working code over perfect code
+5. **Choose alive and breathing over static and stiff**
+
+**The North Star Question:**
+"If this screen was a living thing, would it feel vibrant and warm, or cold and still?"
+
+Build Iwanna like you're building the social connection tool you wish existed - one that feels genuinely alive and makes people feel more human, not less.
+
+Now, let's create something unforgettable. 🚀
