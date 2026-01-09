@@ -7,6 +7,7 @@ import {
   Pressable,
   RefreshControl,
   SafeAreaView,
+  ScrollView,
 } from 'react-native';
 import Animated, {
   useSharedValue,
@@ -18,99 +19,130 @@ import Animated, {
 } from 'react-native-reanimated';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import * as Location from 'expo-location';
 import { colors, typography, spacing, borderRadius, animation, shadows } from '../constants/theme';
 import { usePodStore, Pod } from '../store/podStore';
+import { StoryCircle } from '../components/pods/StoryCircle';
+import { OverlappingAvatars, AvatarMember } from '../components/pods/OverlappingAvatars';
+import { FeaturedPodsSlider } from '../components/FeaturedPodsSlider';
 
 type NavigationProp = NativeStackNavigationProp<any>;
 
 /**
- * Pod Card Component
- * Displays individual pod with breathing animation
+ * Enhanced Pod Card Component
+ * Clean card with overlapping avatars and last message preview
  */
 const PodCard: React.FC<{ pod: Pod; onPress: () => void }> = ({ pod, onPress }) => {
-  // Breathing animation
   const scale = useSharedValue(1);
+  const glowOpacity = useSharedValue(0.3);
+
+  // Calculate time remaining in minutes
+  const getMinutesRemaining = (): number => {
+    const expiresAt = new Date(pod.expiresAt);
+    const now = new Date();
+    const diffMs = expiresAt.getTime() - now.getTime();
+    return Math.floor(diffMs / 60000);
+  };
+
+  // Calculate time remaining display
+  const getTimeRemaining = (): string => {
+    const diffMins = getMinutesRemaining();
+
+    if (diffMins < 0) return 'Expired';
+    if (diffMins < 60) return `${diffMins}m`;
+
+    const hours = Math.floor(diffMins / 60);
+    return `${hours}h`;
+  };
+
+  // Check if urgent (< 30 minutes)
+  const isUrgent = getMinutesRemaining() < 30 && getMinutesRemaining() > 0;
 
   useEffect(() => {
-    scale.value = withRepeat(
-      withSequence(
-        withTiming(1.01, { duration: 1500 }),
-        withTiming(1.0, { duration: 1500 })
-      ),
-      -1,
-      false
-    );
-  }, []);
+    if (isUrgent) {
+      // Urgent pulsing animation
+      scale.value = withRepeat(
+        withSequence(
+          withSpring(1.03, { damping: 10 }),
+          withSpring(1.0, { damping: 10 })
+        ),
+        -1,
+        false
+      );
+
+      glowOpacity.value = withRepeat(
+        withSequence(
+          withTiming(1.0, { duration: 800 }),
+          withTiming(0.3, { duration: 800 })
+        ),
+        -1,
+        false
+      );
+    } else {
+      // Normal breathing animation
+      scale.value = withRepeat(
+        withSequence(
+          withTiming(1.01, { duration: 1500 }),
+          withTiming(1.0, { duration: 1500 })
+        ),
+        -1,
+        false
+      );
+    }
+  }, [isUrgent]);
 
   const animatedStyle = useAnimatedStyle(() => ({
     transform: [{ scale: scale.value }],
   }));
 
-  // Calculate time remaining
-  const getTimeRemaining = (): string => {
-    const expiresAt = new Date(pod.expiresAt);
-    const now = new Date();
-    const diffMs = expiresAt.getTime() - now.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
+  const glowStyle = useAnimatedStyle(() => ({
+    shadowOpacity: isUrgent ? glowOpacity.value * 0.5 : 0,
+  }));
 
-    if (diffMins < 0) return 'Expired';
-    if (diffMins < 60) return `${diffMins}m left`;
-
-    const hours = Math.floor(diffMins / 60);
-    const mins = diffMins % 60;
-    return `${hours}h ${mins}m left`;
-  };
-
-  // Get status color
-  const getStatusColor = (): string => {
-    if (pod.status === 'forming') return colors.accentYellow;
-    if (pod.status === 'active') return colors.accentGreen;
-    if (pod.status === 'completed') return colors.success;
-    return colors.text.tertiary;
-  };
-
-  // Get status text
-  const getStatusText = (): string => {
-    if (pod.status === 'forming') return 'Forming';
-    if (pod.status === 'active') return 'Active';
-    if (pod.status === 'completed') return 'Completed';
-    return 'Expired';
-  };
+  // Convert pod members to avatar format
+  const avatarMembers: AvatarMember[] = pod.members.map(m => ({
+    id: m.userId,
+    username: m.username,
+  }));
 
   return (
-    <Animated.View style={[animatedStyle]}>
+    <Animated.View style={[animatedStyle, glowStyle]}>
       <Pressable
         onPress={onPress}
         style={({ pressed }) => [
           styles.podCard,
           pressed && styles.podCardPressed,
+          isUrgent && styles.podCardUrgent,
         ]}
       >
-        {/* Status badge */}
-        <View style={[styles.statusBadge, { backgroundColor: getStatusColor() + '20' }]}>
-          <Text style={[styles.statusText, { color: getStatusColor() }]}>
-            {getStatusText()}
+        {/* Urgent warning */}
+        {isUrgent && (
+          <View style={styles.urgentBadge}>
+            <Text style={styles.urgentText}>⚠️ almost up!</Text>
+          </View>
+        )}
+
+        {/* Activity name */}
+        <Text style={styles.activity}>{pod.activity}</Text>
+
+        {/* Avatars + Time inline */}
+        <View style={styles.metaRow}>
+          <OverlappingAvatars
+            members={avatarMembers}
+            maxVisible={3}
+            size="small"
+          />
+          <Text style={[styles.timeText, isUrgent && styles.timeTextUrgent]}>
+            • {getTimeRemaining()}
           </Text>
         </View>
 
-        {/* Activity */}
-        <Text style={styles.activity}>{pod.activity}</Text>
-
-        {/* Category */}
-        <Text style={styles.category}>{pod.category.replace(/_/g, ' ')}</Text>
-
-        {/* Members and time */}
-        <View style={styles.metaRow}>
-          <View style={styles.metaItem}>
-            <Text style={styles.metaLabel}>Members</Text>
-            <Text style={styles.metaValue}>{pod.memberCount}</Text>
-          </View>
-
-          <View style={styles.metaItem}>
-            <Text style={styles.metaLabel}>Time Left</Text>
-            <Text style={styles.metaValue}>{getTimeRemaining()}</Text>
-          </View>
-        </View>
+        {/* Last message preview (placeholder for now) */}
+        {pod.status === 'active' && (
+          <Text style={styles.lastMessage} numberOfLines={1}>
+            tap to open chat
+          </Text>
+        )}
       </Pressable>
     </Animated.View>
   );
@@ -160,6 +192,9 @@ export const PodsListScreen: React.FC = () => {
   const activePods = usePodStore((state) => state.activePods);
   const isLoading = usePodStore((state) => state.isLoading);
   const error = usePodStore((state) => state.error);
+
+  // Location state for featured pods
+  const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const fetchActivePods = usePodStore((state) => state.fetchActivePods);
   const connectSocket = usePodStore((state) => state.connectSocket);
 
@@ -169,6 +204,22 @@ export const PodsListScreen: React.FC = () => {
   useEffect(() => {
     fetchActivePods();
     connectSocket();
+
+    // Get user location for featured pods
+    (async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status === 'granted') {
+          const location = await Location.getCurrentPositionAsync({});
+          setUserLocation({
+            latitude: location.coords.latitude,
+            longitude: location.coords.longitude,
+          });
+        }
+      } catch (error) {
+        console.error('Error getting location:', error);
+      }
+    })();
   }, []);
 
   // Handle refresh
@@ -183,18 +234,50 @@ export const PodsListScreen: React.FC = () => {
     navigation.navigate('PodDetail', { podId: pod.id });
   };
 
+  // Calculate time remaining for story circle
+  const getStoryTimeRemaining = (pod: Pod): string => {
+    const expiresAt = new Date(pod.expiresAt);
+    const now = new Date();
+    const diffMs = expiresAt.getTime() - now.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+
+    if (diffMins < 60) return `${diffMins}m`;
+    const hours = Math.floor(diffMins / 60);
+    return `${hours}h`;
+  };
+
+  // Check if urgent
+  const isUrgentPod = (pod: Pod): boolean => {
+    const expiresAt = new Date(pod.expiresAt);
+    const now = new Date();
+    const diffMins = Math.floor((expiresAt.getTime() - now.getTime()) / 60000);
+    return diffMins < 30 && diffMins > 0;
+  };
+
   // Render pod item
-  const renderPodItem = ({ item }: { item: Pod }): JSX.Element => (
+  const renderPodItem = ({ item }: { item: Pod }) => (
     <PodCard pod={item} onPress={() => handlePodPress(item)} />
+  );
+
+  // Render story circle
+  const renderStoryCircle = (pod: Pod) => (
+    <StoryCircle
+      key={pod.id}
+      activity={pod.activity}
+      category={pod.category}
+      timeRemaining={getStoryTimeRemaining(pod)}
+      hasNewMessage={false} // TODO: Connect to actual new message state
+      isUrgent={isUrgentPod(pod)}
+      onPress={() => handlePodPress(pod)}
+    />
   );
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Header */}
+      {/* Header - simplified */}
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Your Pods</Text>
-        <Text style={styles.headerSubtitle}>
-          {activePods.length} active {activePods.length === 1 ? 'pod' : 'pods'}
+        <Text style={styles.headerTitle}>
+          {activePods.length === 0 ? 'no active vibes' : 'your vibes'}
         </Text>
       </View>
 
@@ -203,6 +286,26 @@ export const PodsListScreen: React.FC = () => {
         <View style={styles.errorContainer}>
           <Text style={styles.errorText}>{error}</Text>
         </View>
+      )}
+
+      {/* Featured Pods Slider */}
+      {userLocation && (
+        <FeaturedPodsSlider
+          latitude={userLocation.latitude}
+          longitude={userLocation.longitude}
+        />
+      )}
+
+      {/* Story Circles - horizontal scroll */}
+      {activePods.length > 0 && (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.storiesContainer}
+          contentContainerStyle={styles.storiesContent}
+        >
+          {activePods.map(renderStoryCircle)}
+        </ScrollView>
       )}
 
       {/* Pods list */}
@@ -245,13 +348,16 @@ const styles = StyleSheet.create({
     fontSize: typography.fontSize.xxl,
     fontWeight: typography.fontWeight.bold,
     color: colors.text.primary,
-    marginBottom: spacing.xs,
   },
 
-  headerSubtitle: {
-    fontSize: typography.fontSize.md,
-    fontWeight: typography.fontWeight.regular,
-    color: colors.text.secondary,
+  storiesContainer: {
+    maxHeight: 120,
+    marginBottom: spacing.md,
+  },
+
+  storiesContent: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
   },
 
   errorContainer: {
@@ -292,61 +398,57 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceHover,
   },
 
-  statusBadge: {
+  podCardUrgent: {
+    borderWidth: 2,
+    borderColor: colors.error,
+    shadowColor: colors.error,
+  },
+
+  urgentBadge: {
     alignSelf: 'flex-start',
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.xs,
+    backgroundColor: colors.error + '20',
     borderRadius: borderRadius.sm,
-    marginBottom: spacing.md,
+    marginBottom: spacing.sm,
   },
 
-  statusText: {
+  urgentText: {
     fontSize: typography.fontSize.xs,
-    fontWeight: typography.fontWeight.semibold,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
+    fontWeight: typography.fontWeight.bold,
+    color: colors.error,
   },
 
   activity: {
     fontSize: typography.fontSize.xl,
     fontWeight: typography.fontWeight.bold,
     color: colors.text.primary,
-    marginBottom: spacing.xs,
-  },
-
-  category: {
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.medium,
-    color: colors.text.secondary,
     marginBottom: spacing.md,
-    textTransform: 'capitalize',
   },
 
   metaRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingTop: spacing.md,
-    borderTopWidth: 1,
-    borderTopColor: colors.text.disabled + '30',
+    alignItems: 'center',
+    gap: spacing.sm,
   },
 
-  metaItem: {
-    flex: 1,
-  },
-
-  metaLabel: {
-    fontSize: typography.fontSize.xs,
+  timeText: {
+    fontSize: typography.fontSize.sm,
     fontWeight: typography.fontWeight.medium,
     color: colors.text.tertiary,
-    marginBottom: spacing.xs,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
   },
 
-  metaValue: {
-    fontSize: typography.fontSize.md,
-    fontWeight: typography.fontWeight.semibold,
-    color: colors.text.primary,
+  timeTextUrgent: {
+    color: colors.error,
+    fontWeight: typography.fontWeight.bold,
+  },
+
+  lastMessage: {
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.regular,
+    color: colors.text.tertiary,
+    marginTop: spacing.sm,
+    fontStyle: 'italic',
   },
 
   emptyContainer: {

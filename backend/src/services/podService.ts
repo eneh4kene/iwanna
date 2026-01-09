@@ -37,7 +37,7 @@ class PodService {
   /**
    * Get pod by ID
    */
-  async getPodById(podId: string): Promise<Pod | null> {
+  async getPodById(podId: string): Promise<any | null> {
     const result = await query<{
       id: string;
       wanna_ids: string[];
@@ -48,11 +48,15 @@ class PodService {
       status: 'forming' | 'active' | 'completed' | 'expired';
       expires_at: Date;
       created_at: Date;
+      meeting_place_name: string | null;
+      confirmed_user_ids: string[];
+      show_up_count: number;
     }>(
       `SELECT
         id, wanna_ids, user_ids, shared_intent, status, expires_at, created_at,
         ST_Y(centroid_location::geometry) as latitude,
-        ST_X(centroid_location::geometry) as longitude
+        ST_X(centroid_location::geometry) as longitude,
+        meeting_place_name, confirmed_user_ids, show_up_count
       FROM pods
       WHERE id = $1`,
       [podId]
@@ -65,10 +69,15 @@ class PodService {
     const row = result.rows[0];
     if (!row) return null;
 
+    // Ensure arrays are properly converted (handle PostgreSQL array conversion)
+    const userIds = Array.isArray(row.user_ids) ? row.user_ids : (row.user_ids ? [row.user_ids] : []);
+    const wannaIds = Array.isArray(row.wanna_ids) ? row.wanna_ids : (row.wanna_ids ? [row.wanna_ids] : []);
+    const confirmedUserIds = Array.isArray(row.confirmed_user_ids) ? row.confirmed_user_ids : (row.confirmed_user_ids ? [row.confirmed_user_ids] : []);
+
     return {
       id: row.id,
-      wannaIds: row.wanna_ids,
-      userIds: row.user_ids,
+      wannaIds,
+      userIds,
       centroid: {
         latitude: row.latitude,
         longitude: row.longitude,
@@ -77,13 +86,16 @@ class PodService {
       status: row.status,
       expiresAt: row.expires_at,
       createdAt: row.created_at,
+      meetingPlaceName: row.meeting_place_name,
+      confirmedUserIds,
+      showUpCount: row.show_up_count || 0,
     };
   }
 
   /**
    * Get user's active pods
    */
-  async getUserActivePods(userId: string): Promise<Pod[]> {
+  async getUserActivePods(userId: string): Promise<any[]> {
     const result = await query<{
       id: string;
       wanna_ids: string[];
@@ -94,11 +106,15 @@ class PodService {
       status: 'forming' | 'active' | 'completed' | 'expired';
       expires_at: Date;
       created_at: Date;
+      meeting_place_name: string | null;
+      confirmed_user_ids: string[];
+      show_up_count: number;
     }>(
       `SELECT
         id, wanna_ids, user_ids, shared_intent, status, expires_at, created_at,
         ST_Y(centroid_location::geometry) as latitude,
-        ST_X(centroid_location::geometry) as longitude
+        ST_X(centroid_location::geometry) as longitude,
+        meeting_place_name, confirmed_user_ids, show_up_count
       FROM pods
       WHERE $1 = ANY(user_ids)
         AND status IN ('forming', 'active')
@@ -118,6 +134,9 @@ class PodService {
       status: row.status,
       expiresAt: row.expires_at,
       createdAt: row.created_at,
+      meetingPlaceName: row.meeting_place_name,
+      confirmedUserIds: row.confirmed_user_ids || [],
+      showUpCount: row.show_up_count || 0,
     }));
   }
 
@@ -151,13 +170,30 @@ class PodService {
    * Leave a pod
    */
   async leavePod(podId: string, userId: string): Promise<void> {
+    // Check pod membership using PostgreSQL ANY operator
+    const membershipCheck = await query<{ exists: boolean }>(
+      'SELECT EXISTS(SELECT 1 FROM pods WHERE id = $1 AND $2 = ANY(user_ids)) as exists',
+      [podId, userId]
+    );
+
+    if (!membershipCheck.rows[0]?.exists) {
+      // Check if pod exists at all
+      const podExists = await query<{ exists: boolean }>(
+        'SELECT EXISTS(SELECT 1 FROM pods WHERE id = $1) as exists',
+        [podId]
+      );
+      
+      if (!podExists.rows[0]?.exists) {
+        throw new AppError('Pod not found', 404);
+      }
+      
+      throw new AppError('You are not a member of this pod', 403);
+    }
+
+    // Get pod to check status
     const pod = await this.getPodById(podId);
     if (!pod) {
       throw new AppError('Pod not found', 404);
-    }
-
-    if (!pod.userIds.includes(userId)) {
-      throw new AppError('You are not a member of this pod', 403);
     }
 
     if (pod.status === 'completed' || pod.status === 'expired') {
@@ -165,7 +201,7 @@ class PodService {
     }
 
     // Remove user from pod
-    const updatedUserIds = pod.userIds.filter(id => id !== userId);
+    const updatedUserIds = pod.userIds.filter((id: string) => id !== userId);
 
     // Get leaving user's username
     const userResult = await query<{ username: string }>(
@@ -212,13 +248,30 @@ class PodService {
    * Mark pod as completed (successful meetup)
    */
   async completePod(podId: string, userId: string): Promise<void> {
+    // Check pod membership using PostgreSQL ANY operator
+    const membershipCheck = await query<{ exists: boolean }>(
+      'SELECT EXISTS(SELECT 1 FROM pods WHERE id = $1 AND $2 = ANY(user_ids)) as exists',
+      [podId, userId]
+    );
+
+    if (!membershipCheck.rows[0]?.exists) {
+      // Check if pod exists at all
+      const podExists = await query<{ exists: boolean }>(
+        'SELECT EXISTS(SELECT 1 FROM pods WHERE id = $1) as exists',
+        [podId]
+      );
+      
+      if (!podExists.rows[0]?.exists) {
+        throw new AppError('Pod not found', 404);
+      }
+      
+      throw new AppError('You are not a member of this pod', 403);
+    }
+
+    // Get pod to check status
     const pod = await this.getPodById(podId);
     if (!pod) {
       throw new AppError('Pod not found', 404);
-    }
-
-    if (!pod.userIds.includes(userId)) {
-      throw new AppError('You are not a member of this pod', 403);
     }
 
     if (pod.status === 'completed') {
@@ -234,8 +287,11 @@ class PodService {
 
     logger.info('Pod marked as completed', { podId, userId });
 
+    // Ensure userIds is an array before notifying
+    const memberIds = Array.isArray(pod.userIds) ? pod.userIds : [];
+    
     // Notify all members
-    await notificationService.notifyPodCompleted(podId, pod.userIds, userId).catch(err => {
+    await notificationService.notifyPodCompleted(podId, memberIds, userId).catch(err => {
       logger.error('Failed to send pod completed notification', { podId, error: err });
     });
   }

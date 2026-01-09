@@ -63,6 +63,12 @@ export const useWannaStore = create<WannaState>((set, get) => ({
    * Create a new wanna
    */
   createWanna: async (text: string, moodEmoji?: string) => {
+    // Prevent duplicate submissions
+    if (get().isCreating) {
+      console.log('Wanna creation already in progress, ignoring duplicate request');
+      return;
+    }
+
     set({ isCreating: true, error: null });
 
     try {

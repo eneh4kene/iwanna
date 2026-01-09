@@ -19,7 +19,7 @@ import { colors, typography, spacing, borderRadius, animation } from '../constan
 import { useAuthStore } from '../store/authStore';
 
 interface Props {
-  onComplete: () => void;
+  onComplete?: () => void;
 }
 
 export const AgeGateScreen: React.FC<Props> = ({ onComplete }) => {
@@ -65,7 +65,7 @@ export const AgeGateScreen: React.FC<Props> = ({ onComplete }) => {
 
     try {
       await createAccount(true);
-      onComplete();
+      onComplete?.();
     } catch (error: any) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       // Error is already in store

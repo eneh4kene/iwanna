@@ -74,7 +74,7 @@ export const errorHandler = (
   }
 
   // Handle database errors
-  if (error.name === 'QueryFailedError' || 'code' in error) {
+  if (error.name === 'QueryFailedError' || ('code' in error && (error as any).code)) {
     res.status(500).json({
       success: false,
       error: 'Database operation failed',

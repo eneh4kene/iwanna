@@ -199,6 +199,111 @@ class NotificationService {
   }
 
   /**
+   * Notify pod members of a new chat message
+   */
+  async notifyChatMessage(
+    message: {
+      id: string;
+      podId: string;
+      userId: string;
+      username?: string;
+      content: string;
+      messageType: 'user' | 'system' | 'ai';
+      attachments?: any[];
+      replyTo?: {
+        messageId: string;
+        username: string;
+        content: string;
+      };
+      createdAt: Date;
+    },
+    memberIds: string[]
+  ): Promise<void> {
+    if (!this.io) {
+      logger.warn('Socket.IO not initialized, cannot send chat message notification');
+      return;
+    }
+
+    const notification: any = {
+      id: message.id,
+      podId: message.podId,
+      userId: message.userId,
+      username: message.username || 'Unknown',
+      content: message.content,
+      messageType: message.messageType,
+      createdAt: message.createdAt instanceof Date
+        ? message.createdAt.toISOString()
+        : typeof message.createdAt === 'string'
+          ? message.createdAt
+          : new Date().toISOString(),
+    };
+
+    // Include attachments if present
+    if (message.attachments && message.attachments.length > 0) {
+      notification.attachments = message.attachments;
+    }
+
+    // Include replyTo if present
+    if (message.replyTo) {
+      notification.replyTo = message.replyTo;
+    }
+
+    // Notify all pod members (including sender for confirmation)
+    for (const userId of memberIds) {
+      this.io.to(`user:${userId}`).emit('chat.message', notification);
+    }
+
+    // Also broadcast to pod room
+    this.io.to(`pod:${message.podId}`).emit('chat.message', notification);
+
+    logger.info('Sent chat message notification', {
+      podId: message.podId,
+      messageId: message.id,
+      messageType: message.messageType,
+      memberCount: memberIds.length,
+      createdAt: notification.createdAt,
+    });
+  }
+
+  /**
+   * Notify pod members when someone confirms arrival
+   */
+  async notifyMemberConfirmed(
+    podId: string,
+    userId: string,
+    username: string,
+    memberIds: string[],
+    confirmedCount: number,
+    totalCount: number
+  ): Promise<void> {
+    if (!this.io) return;
+
+    const notification = {
+      podId,
+      userId,
+      username,
+      confirmedCount,
+      totalCount,
+      timestamp: new Date(),
+    };
+
+    // Notify all pod members
+    for (const memberId of memberIds) {
+      this.io.to(`user:${memberId}`).emit('pod.member_confirmed', notification);
+    }
+
+    // Also broadcast to pod room
+    this.io.to(`pod:${podId}`).emit('pod.member_confirmed', notification);
+
+    logger.info('Sent member_confirmed notification', {
+      podId,
+      username,
+      confirmedCount,
+      totalCount,
+    });
+  }
+
+  /**
    * Send a notification to a specific user
    */
   emitToUser(userId: string, event: string, data: any): void {

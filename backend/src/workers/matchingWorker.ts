@@ -97,7 +97,7 @@ class MatchingWorker {
             // Get the pod to mark all wanna IDs as processed
             const pod = await podService.getPodById(podId);
             if (pod) {
-              pod.wannaIds.forEach(id => processedWannaIds.add(id));
+              pod.wannaIds.forEach((id: string) => processedWannaIds.add(id));
               logger.info('Pod formed', {
                 podId,
                 wannaIds: pod.wannaIds,
@@ -138,6 +138,7 @@ class MatchingWorker {
       `SELECT id
        FROM wannas
        WHERE status = 'active'
+         AND expires_at > NOW()
          AND created_at > NOW() - INTERVAL '6 hours'
        ORDER BY created_at ASC
        LIMIT 50`,

@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { podController } from '../controllers/podController';
+import { chatController } from '../controllers/chatController';
 import { authenticateToken } from '../middleware/authenticate';
 
 const router = Router();
@@ -50,5 +51,33 @@ router.post('/:id/complete', podController.completePod.bind(podController));
  * @access Private
  */
 router.post('/match/:wannaId', podController.triggerMatch.bind(podController));
+
+/**
+ * @route POST /api/v1/pods/:id/confirm
+ * @desc Confirm arrival at meeting point
+ * @access Private (pod members only)
+ */
+router.post('/:id/confirm', podController.confirmArrival.bind(podController));
+
+/**
+ * @route POST /api/v1/pods/:id/feedback
+ * @desc Submit post-pod feedback
+ * @access Private (pod members only)
+ */
+router.post('/:id/feedback', podController.submitFeedback.bind(podController));
+
+/**
+ * @route GET /api/v1/pods/:podId/messages
+ * @desc Get chat messages for a pod
+ * @access Private (pod members only)
+ */
+router.get('/:podId/messages', chatController.getMessages.bind(chatController));
+
+/**
+ * @route POST /api/v1/pods/:podId/messages
+ * @desc Send a message to a pod
+ * @access Private (pod members only)
+ */
+router.post('/:podId/messages', chatController.sendMessage.bind(chatController));
 
 export default router;

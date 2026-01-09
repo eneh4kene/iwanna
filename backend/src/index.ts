@@ -10,6 +10,8 @@ import { requestLogger } from './middleware/requestLogger';
 import { globalRateLimiter } from './middleware/rateLimiter';
 import { logger } from './utils/logger';
 import { matchingWorker } from './workers/matchingWorker';
+import { cleanupWorker } from './workers/cleanupWorker';
+import { startVibeWorker, stopVibeWorker } from './workers/vibeWorker';
 import { initializeWebSocket, shutdownWebSocket } from './websocket/socketHandler';
 import routes from './routes';
 
@@ -71,8 +73,10 @@ async function startServer(): Promise<void> {
     await connectRedis();
     logger.info('Database connections established');
 
-    // Start matching worker
+    // Start background workers
     matchingWorker.start();
+    cleanupWorker.start();
+    startVibeWorker();
 
     // Register API routes
     app.use(`/api/${serverConfig.apiVersion}`, routes);
@@ -109,9 +113,9 @@ async function startServer(): Promise<void> {
     // Global error handler (must be last)
     app.use(errorHandler);
 
-    // Start HTTP server
-    const server = app.listen(serverConfig.port, () => {
-      logger.info('HTTP server started on port ' + serverConfig.port);
+    // Start HTTP server - bind to all interfaces (0.0.0.0) to allow connections from mobile devices
+    const server = app.listen(serverConfig.port, '0.0.0.0', () => {
+      logger.info('HTTP server started on port ' + serverConfig.port + ' (accessible from all interfaces)');
     });
 
     // Initialize WebSocket server (after HTTP server is started)
@@ -145,8 +149,10 @@ async function startServer(): Promise<void> {
       server.close(async () => {
         logger.info('HTTP server closed');
 
-        // Stop matching worker
+        // Stop background workers
         matchingWorker.stop();
+        cleanupWorker.stop();
+        stopVibeWorker();
 
         // Shutdown WebSocket server
         await shutdownWebSocket(io);

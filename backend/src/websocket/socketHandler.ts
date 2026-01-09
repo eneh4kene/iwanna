@@ -12,13 +12,15 @@ import { logger } from '../utils/logger';
 export function initializeWebSocket(httpServer: HTTPServer): SocketServer {
   const io = new SocketServer(httpServer, {
     cors: {
-      origin: serverConfig.corsOrigins,
+      origin: serverConfig.corsOrigins.includes('*') ? true : serverConfig.corsOrigins,
       methods: ['GET', 'POST'],
       credentials: true,
+      allowedHeaders: ['Authorization', 'Content-Type'],
     },
     transports: ['websocket', 'polling'],
     pingTimeout: 60000,
     pingInterval: 25000,
+    allowEIO3: true, // Allow Engine.IO v3 clients
   });
 
   // Apply authentication middleware

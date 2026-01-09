@@ -279,6 +279,19 @@ All routes prefixed with `/api/v1`:
 - `GET /chat/pods/:podId/messages` - Get chat history
 - `POST /chat/pods/:podId/messages` - Send message
 
+### @vibe: AI Social Facilitator in Pods
+
+**IMPORTANT:** For all pod-related implementations, especially @vibe's interactions and behavior in pod chat, refer to **[vibePodExperience.md](./vibePodExperience.md)** for comprehensive guidelines.
+
+**Key Points:**
+- @vibe acts as a social lubricant, reducing awkwardness and accelerating IRL meetups
+- She's timing-aware (7 stages: formation, ice-breaking, decision-making, plan lock-in, pre-meetup, hangout, post-hangout)
+- Always actionable, never conversational - every message has a clear next step
+- Personality: lowercase, max 2 sentences, active voice, 1 emoji max
+- Visual design: Purple tint background, centered messages, ✨ avatar
+- Smart silence: Only speaks when conversation stalls or decisions needed
+- Future features: Inline action buttons, location suggestions, plan pinning
+
 ### WebSocket Events
 
 **Client → Server:**
@@ -797,3 +810,393 @@ Created: 2025-10-31 02:01:24
 - Check active pods: `GET /api/v1/pods/active`
 - View pod details: `GET /api/v1/pods/:id`
 - Pod statistics: `GET /api/v1/pods/stats`
+
+---
+
+## 🔴 ACTIVE DEBUGGING SESSION (Updated: 2025-11-05)
+
+### Issue Discovered During E2E Testing
+
+**Test Setup:**
+- Device 1: iOS Simulator (Xcode on Mac)
+- Device 2: Physical device via Expo Go
+- Both users authenticated with different anonymous accounts
+
+**What Was Tested:**
+Both users created the same wanna: "play football"
+
+**Expected Behavior:**
+- Matching algorithm should detect compatible wannas
+- Background worker (runs every 10s) should form a pod
+- Users should see pod in "Pods" screen
+
+**Actual Behavior:**
+1. ❌ Pods were NOT being formed (matching algorithm not triggering)
+2. ❌ Pods page showed "failed to fetch pods" error
+
+### Debugging Status
+
+**What I Was Investigating Before Crash:**
+- Checking if matching algorithm is running
+- Investigating `/api/v1/pods/active` endpoint failure
+- Analyzing why pods are not being formed despite similar wannas
+
+**Potential Root Causes to Investigate:**
+1. Background matching worker not processing wannas correctly
+2. Compatibility scoring threshold too strict
+3. Geographic distance too large (users not close enough)
+4. Embedding similarity check failing (if OpenAI embeddings unavailable)
+5. API endpoint authentication or database query issues
+6. Redis geospatial index not populated correctly
+
+**Key Files to Check:**
+- `backend/src/workers/matchingWorker.ts` - Background matching logic
+- `backend/src/services/matchingService.ts` - Compatibility calculation
+- `backend/src/controllers/podController.ts` - GET /pods/active endpoint
+- `backend/src/services/podService.ts` - Pod retrieval logic
+- Backend logs: `/Users/kene_eneh/iwanna/backend.log`
+
+**Database Tables to Query:**
+```sql
+-- Check if wannas were created
+SELECT id, user_id, text, status, created_at FROM wannas ORDER BY created_at DESC LIMIT 10;
+
+-- Check if pods exist
+SELECT id, status, created_at FROM pods ORDER BY created_at DESC LIMIT 10;
+
+-- Check Redis geospatial index
+-- redis-cli: GEORADIUS active_wannas <lon> <lat> 5 mi WITHDIST WITHCOORD
+
+-- Check if matching worker is processing
+-- Look for logs indicating worker is running
+```
+
+**What Needs to Happen Next:**
+1. Check backend logs for errors
+2. Verify wannas are in database with status='active'
+3. Verify wannas are in Redis geospatial index
+4. Check matching worker is running and processing wannas
+5. Test compatibility calculation manually with the two wannas
+6. Debug GET /api/v1/pods/active endpoint failure
+7. Check if authentication token is valid for the request
+
+### Current System State (as of crash)
+
+**Backend:**
+- ✅ Running on port 3001 (nodemon)
+- ✅ PostgreSQL + Redis containers healthy
+- ⚠️ Matching worker status: UNKNOWN (need to verify)
+- ⚠️ OpenAI API key: placeholder (embeddings will be null)
+
+**Mobile:**
+- ❌ Expo dev server NOT running (needs restart)
+- ⚠️ Two authenticated users active
+- ⚠️ Both users created "play football" wanna
+
+**Next Immediate Actions:**
+1. ✅ Document current status
+2. ✅ Check backend logs for errors
+3. ✅ Query database for wannas status
+4. ✅ Verify matching worker is processing
+5. ✅ Debug pods/active endpoint
+6. ✅ Fix identified issues
+7. 🔄 Re-test E2E flow
+
+---
+
+## ✅ BUGS FIXED (2025-11-06 - Multiple Sessions)
+
+### Session 1: Core Matching Bugs (00:12 UTC)
+
+### Root Causes Identified
+
+**Bug 1: Expired wannas not being filtered**
+- Matching queries only checked `status = 'active'`, not `expires_at > NOW()`
+- Old wannas from days ago were still being matched with new users
+- Result: User matched with "Paint" wanna from Nov 3 instead of fresh "Play football"
+
+**Bug 2: No automatic expiry cleanup**
+- Wannas never transitioned from `active` to `expired` status
+- Redis geospatial index accumulated stale data
+- Background worker processed expired wannas
+
+**Bug 3: Matching radius too small for cross-device testing**
+- Default: 5 miles
+- iOS simulator (Mac location) and physical device (user location) are geographically distant
+- Wannas couldn't match due to distance constraint
+
+### Fixes Applied
+
+**1. Added expiry checks to all queries** ✅
+- `matchingService.ts` line 315: Added `AND expires_at > NOW()`
+- `matchingService.ts` line 365: Added `AND expires_at > NOW()`
+- `matchingWorker.ts` line 141: Added `AND expires_at > NOW()`
+
+**2. Created automatic cleanup worker** ✅
+- New file: `backend/src/workers/cleanupWorker.ts`
+- Runs every 60 seconds
+- Expires old wannas (sets `status = 'expired'`)
+- Expires old pods (sets `status = 'expired'`)
+- Removes expired wannas from Redis geospatial index
+- Integrated into server startup/shutdown in `backend/src/index.ts`
+
+**3. Implemented smart fallback radius** ✅
+- Default radius: **3 miles** (MVP recommendation from miles.md - truly spontaneous)
+- Fallback radius: **10 miles** (automatically expands if no matches found at 3 miles)
+- Algorithm tries 3 miles first, then 10 miles as one-time expansion
+- **For cross-device testing:** Temporarily increase `FALLBACK_RADIUS_MILES` to 50-100 miles if devices are in different cities
+
+### Files Modified
+
+1. **backend/src/services/matchingService.ts**
+   - Line 315: Added expiry check to `getWannaForMatching`
+   - Line 365: Added expiry check to `getMultipleWannasForMatching`
+
+2. **backend/src/workers/matchingWorker.ts**
+   - Line 141: Added expiry check to `getUnmatchedWannas`
+
+3. **backend/src/workers/cleanupWorker.ts** (NEW FILE)
+   - Automatic cleanup for expired wannas and pods
+   - Runs every 60 seconds
+   - Removes from Redis geospatial index
+
+4. **backend/src/index.ts**
+   - Line 13: Import cleanupWorker
+   - Line 77: Start cleanupWorker on server startup
+   - Line 152: Stop cleanupWorker on server shutdown
+
+5. **backend/.env**
+   - Line 47: `MATCHING_RADIUS_MILES=3` (MVP default)
+   - Line 48: `FALLBACK_RADIUS_MILES=10` (automatic expansion)
+
+6. **backend/src/config/index.ts**
+   - Line 119: Added `fallbackRadiusMiles` config
+
+7. **backend/src/services/matchingService.ts**
+   - Lines 83-98: Added smart fallback - tries default radius, then expands if no matches
+
+### Testing Instructions
+
+**Before Re-Testing:**
+1. Backend server auto-restarted (nodemon detected changes)
+2. Cleanup worker is now running
+3. All expired wannas have been cleared
+4. Redis geospatial index is empty
+
+**Re-Test E2E Flow:**
+1. Open iOS Simulator (Xcode) with User 1
+2. Open Physical Device (Expo Go) with User 2
+3. Both users create wanna: "play football"
+4. Wait ~10 seconds for matching worker to run
+5. Check mobile app - both should see new pod formed
+6. Navigate to Pods screen - should show the matched pod
+7. Verify pod contains both users
+
+**Expected Result:**
+- ✅ Wannas match within 10 seconds
+- ✅ Pod formed with 2 users
+- ✅ Both users see the same pod
+- ✅ No old/expired wannas in the match
+
+**If issues persist:**
+- Check backend logs: `tail -f /Users/kene_eneh/iwanna/backend.log`
+- Verify matching worker is running (logs every 10s)
+- Check database: `SELECT * FROM wannas WHERE status = 'active';`
+- Check pods: `SELECT * FROM pods ORDER BY created_at DESC LIMIT 5;`
+
+### What's Working Now
+
+1. ✅ Matching algorithm filters expired wannas
+2. ✅ Automatic cleanup runs every minute
+3. ✅ Matching radius large enough for cross-device testing
+4. ✅ Background worker processes all active wannas
+5. ✅ Redis geospatial index stays clean
+
+### Known Issues
+
+1. ⚠️ Mobile "failed to fetch pods" error likely due to:
+   - Stale authentication token (need to re-login)
+   - Mobile app not handling response correctly
+   - Network connectivity issue
+
+   **Solution:** Restart mobile app and re-authenticate
+
+---
+
+### Session 2: Mobile App Authentication & WebSocket Bugs (09:40 UTC)
+
+**Issues Found During E2E Testing:**
+1. ❌ WebSocket connection failing - "No auth token found"
+2. ❌ Pods screen showing "failed to fetch pods"
+3. ❌ Real-time notifications not working
+4. ❌ Rate limiting incorrectly incrementing (showing 5/5 wannas when only 2-3 created)
+5. ❌ React duplicate key errors for pods
+6. ❌ Same user appearing twice in pods
+
+**Root Causes:**
+
+**Bug 1: WebSocket Auth Token Key Mismatch**
+- `socketService.ts` line 76: Looking for `'authToken'`
+- `api.ts` line 13: Storing as `'auth_token'`
+- Keys didn't match, so WebSocket couldn't authenticate
+
+**Bug 2: WebSocket Using Wrong URL**
+- `socketService.ts` was using `API_BASE_URL` which includes `/api/v1`
+- Should use `WS_URL` which is just the base URL
+- Socket.io doesn't need the API path prefix
+
+**Bug 3: Rate Limiting - Duplicate Submissions**
+- Mobile app not preventing rapid button taps
+- Multiple requests sent before first completed
+- Each request incremented counter, even if wanna creation failed
+- Result: Counter showed 5/5 when user only created 2-3 wannas
+
+**Bug 4: Duplicate Users in Pods**
+- Same user creating multiple wannas
+- All wannas from same user getting matched into same pod
+- Pod had `user_ids: [user-A, user-A]` - duplicate!
+- React complained about duplicate keys when rendering
+
+**Fixes Applied:**
+
+**1. Fixed WebSocket Authentication** ✅
+```typescript
+// mobile/src/services/socketService.ts line 76
+const token = await SecureStore.getItemAsync('auth_token'); // Changed from 'authToken'
+```
+
+**2. Fixed WebSocket URL** ✅
+```typescript
+// mobile/src/services/socketService.ts line 3
+import { WS_URL } from '../constants/config'; // Changed from API_BASE_URL
+
+// Line 84
+this.socket = io(WS_URL, { // Changed from API_BASE_URL
+```
+
+**3. Fixed Rate Limiting - Duplicate Request Guard** ✅
+```typescript
+// mobile/src/store/wannaStore.ts line 66-70
+createWanna: async (text: string, moodEmoji?: string) => {
+  // Prevent duplicate submissions
+  if (get().isCreating) {
+    console.log('Wanna creation already in progress, ignoring duplicate request');
+    return;
+  }
+```
+
+**4. Fixed Duplicate Users in Pods** ✅
+```typescript
+// backend/src/services/matchingService.ts line 159-167
+// Remove wannas from the same user (keep only the first wanna per user)
+const seenUserIds = new Set<string>();
+const uniqueWannas = allWannas.filter(wanna => {
+  if (seenUserIds.has(wanna.userId)) {
+    return false;
+  }
+  seenUserIds.add(wanna.userId);
+  return true;
+});
+```
+
+**Database Cleanup:**
+- Reset daily wanna counters for test users
+- Deleted 3 broken pods with duplicate users
+- Marked duplicate wannas as expired
+
+**Files Modified:**
+
+1. **mobile/src/services/socketService.ts**
+   - Line 3: Changed import from API_BASE_URL to WS_URL
+   - Line 76: Changed auth token key from 'authToken' to 'auth_token'
+   - Line 84: Changed socket connection to use WS_URL
+
+2. **mobile/src/store/wannaStore.ts**
+   - Lines 66-70: Added duplicate submission guard
+
+3. **backend/src/services/matchingService.ts**
+   - Lines 156-170: Added duplicate user filtering in pod formation
+   - Lines 172-195: Updated to use uniqueWannas instead of allWannas
+
+**Testing Results:**
+
+✅ **What's Working:**
+- Backend matching algorithm functioning perfectly
+- Pods being created with correct users
+- WebSocket connecting successfully
+- Rate limiting accurate (after guard added)
+- No more duplicate users in pods
+
+⚠️ **Intermittent Issues:**
+- **iOS Simulator:** Sometimes not showing pods, "failed to fetch pods" error
+- **Android Device:** Picks up pods more reliably
+- **Inconsistency:** Both devices authenticated, WebSocket connected, but iOS not always fetching
+
+**Current Status (10:12 UTC):**
+
+**Backend:**
+- ✅ Running perfectly on port 3001
+- ✅ Matching worker processing every 10s
+- ✅ Cleanup worker running every 60s
+- ✅ WebSocket server operational
+- ✅ Database healthy, 1 active valid pod
+
+**Mobile Apps:**
+- ✅ Expo dev server running
+- ✅ WebSocket connections established
+- ⚠️ iOS Simulator: Inconsistent pod fetching
+- ✅ Android Device: More reliable
+- ⚠️ Both showing "failed to fetch pods" intermittently
+
+**Possible Remaining Issues:**
+
+1. **iOS Simulator Token Expiry:**
+   - Access tokens expire after 15 minutes
+   - May need to refresh or re-login on iOS
+   - Android might have newer token
+
+2. **Network/CORS Issues:**
+   - iOS simulator may have different network routing
+   - API requests timing out
+   - Need to check backend logs for failed requests
+
+3. **State Management:**
+   - Pod store not updating properly on iOS
+   - React Query/Zustand state stale
+   - Need to investigate fetchActivePods() failures
+
+**Recommended Next Steps:**
+
+1. **Check backend logs for failed /pods/active requests:**
+   ```bash
+   tail -f /Users/kene_eneh/iwanna/backend.log | grep "pods/active"
+   ```
+
+2. **Verify authentication tokens on both devices:**
+   - Check if tokens are valid and not expired
+   - Compare iOS vs Android token status
+
+3. **Test API endpoint directly:**
+   ```bash
+   curl -H "Authorization: Bearer <ios-token>" http://192.168.1.252:3001/api/v1/pods/active
+   ```
+
+4. **Mobile app logs:**
+   - Check Expo logs for specific errors
+   - Look for 401 Unauthorized or network timeout errors
+
+5. **Force re-authentication:**
+   - Log out and log back in on iOS simulator
+   - Fresh token might resolve inconsistency
+
+**Known Working Configuration:**
+- Backend: Node.js on port 3001
+- Database: PostgreSQL + Redis healthy
+- WebSocket: Connected successfully
+- Matching: 3-mile default, 6000-mile fallback (for cross-continent testing)
+- Rate Limit: 5 wannas/day (Tier 1)
+
+**Production Reminders:**
+- ⚠️ Change `FALLBACK_RADIUS_MILES` from 6000 to 10 miles
+- ⚠️ All mobile app fixes need Metro bundler restart to take effect
+- ⚠️ Backend auto-restarts on file changes (nodemon)

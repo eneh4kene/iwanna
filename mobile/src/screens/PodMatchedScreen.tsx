@@ -36,9 +36,12 @@ type NavigationProp = NativeStackNavigationProp<any>;
 const SparklingStar: React.FC<{ delay: number; size: number; top: string; left: string }> = ({
   delay,
   size,
-  top,
-  left,
+  top: topPercent,
+  left: leftPercent,
 }) => {
+  // Convert percentage strings to numbers for positioning
+  const top = parseFloat(topPercent) / 100;
+  const left = parseFloat(leftPercent) / 100;
   const opacity = useSharedValue(0);
   const scale = useSharedValue(0);
   const rotate = useSharedValue(0);
@@ -92,8 +95,9 @@ const SparklingStar: React.FC<{ delay: number; size: number; top: string; left: 
         styles.sparkle,
         {
           fontSize: size,
-          top,
-          left,
+          position: 'absolute',
+          top: `${top * 100}%`,
+          left: `${left * 100}%`,
         },
         animatedStyle,
       ]}
@@ -113,6 +117,7 @@ export const PodMatchedScreen: React.FC = () => {
   const { podId } = route.params;
 
   const activePods = usePodStore((state) => state.activePods);
+  const sendMessage = usePodStore((state) => state.sendMessage);
   const pod = activePods.find((p) => p.id === podId);
 
   // Animations
@@ -174,6 +179,14 @@ export const PodMatchedScreen: React.FC = () => {
         false
       );
     }, 1200);
+
+    // Auto-navigate to pod detail after 3 seconds
+    const autoNavigateTimer = setTimeout(() => {
+      navigation.navigate('PodDetail', { podId });
+    }, 3000);
+
+    // Cleanup timer on unmount
+    return () => clearTimeout(autoNavigateTimer);
   }, []);
 
   const emojiAnimatedStyle = useAnimatedStyle(() => ({
@@ -200,8 +213,32 @@ export const PodMatchedScreen: React.FC = () => {
     opacity: glowOpacity.value,
   }));
 
+  // Calculate simple time remaining
+  const getSimpleTimeRemaining = (): string => {
+    if (!pod) return '';
+
+    const expiresAt = new Date(pod.expiresAt);
+    const now = new Date();
+    const diffMs = expiresAt.getTime() - now.getTime();
+    const diffHours = Math.floor(diffMs / 3600000);
+
+    if (diffHours >= 1) {
+      return `starting in ${diffHours}h`;
+    }
+
+    const diffMins = Math.floor(diffMs / 60000);
+    return `starting in ${diffMins}m`;
+  };
+
   // Handle view pod
   const handleViewPod = (): void => {
+    navigation.navigate('PodDetail', { podId });
+  };
+
+  // Handle say hi - sends "hey!" message and navigates
+  const handleSayHi = async (): Promise<void> => {
+    await sendMessage(podId, 'hey!');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     navigation.navigate('PodDetail', { podId });
   };
 
@@ -238,43 +275,40 @@ export const PodMatchedScreen: React.FC = () => {
 
         {/* Title */}
         <Animated.View style={titleAnimatedStyle}>
-          <Text style={styles.title}>You've been matched!</Text>
+          <Text style={styles.title}>you've been matched!</Text>
           <Text style={styles.subtitle}>
-            Found {pod.memberCount} {pod.memberCount === 1 ? 'person' : 'people'} who feel the same way
+            found {pod.memberCount} {pod.memberCount === 1 ? 'person' : 'people'} who feel the same way
           </Text>
         </Animated.View>
 
-        {/* Pod info card */}
-        <Animated.View style={[styles.card, cardAnimatedStyle]}>
-          <View style={styles.cardHeader}>
-            <Text style={styles.cardTitle}>{pod.activity}</Text>
-            <View style={styles.memberBadge}>
-              <Text style={styles.memberBadgeText}>
-                {pod.memberCount} {pod.memberCount === 1 ? 'member' : 'members'}
-              </Text>
-            </View>
+        {/* Member Avatars */}
+        <Animated.View style={[styles.avatarsContainer, cardAnimatedStyle]}>
+          <View style={styles.avatarRow}>
+            {pod.members.slice(0, 5).map((member, index) => (
+              <View
+                key={member.userId}
+                style={[
+                  styles.avatar,
+                  index > 0 && { marginLeft: -16 },
+                ]}
+              >
+                <Text style={styles.avatarText}>
+                  {member.username.charAt(0).toUpperCase()}
+                </Text>
+              </View>
+            ))}
+            {pod.memberCount > 5 && (
+              <View style={[styles.avatar, { marginLeft: -16 }]}>
+                <Text style={styles.avatarText}>+{pod.memberCount - 5}</Text>
+              </View>
+            )}
           </View>
+        </Animated.View>
 
-          <Text style={styles.category}>{pod.category.replace(/_/g, ' ')}</Text>
-
-          <View style={styles.infoRow}>
-            <View style={styles.infoItem}>
-              <Text style={styles.infoLabel}>Status</Text>
-              <Text style={styles.infoValue}>
-                {pod.status === 'forming' ? 'Forming' : 'Active'}
-              </Text>
-            </View>
-
-            <View style={styles.infoItem}>
-              <Text style={styles.infoLabel}>Expires</Text>
-              <Text style={styles.infoValue}>
-                {new Date(pod.expiresAt).toLocaleTimeString([], {
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })}
-              </Text>
-            </View>
-          </View>
+        {/* Activity Info */}
+        <Animated.View style={cardAnimatedStyle}>
+          <Text style={styles.activityName}>{pod.activity}</Text>
+          <Text style={styles.timeText}>{getSimpleTimeRemaining()}</Text>
         </Animated.View>
 
         {/* CTA Button */}
@@ -286,15 +320,17 @@ export const PodMatchedScreen: React.FC = () => {
               pressed && styles.buttonPressed,
             ]}
           >
-            <Text style={styles.buttonText}>View Pod Details</Text>
+            <Text style={styles.buttonText}>start chatting</Text>
           </Pressable>
         </Animated.View>
 
-        {/* Dismiss hint */}
+        {/* Quick Action */}
         <Animated.View style={titleAnimatedStyle}>
-          <Text style={styles.dismissHint}>
-            This pod expires in 3 hours
-          </Text>
+          <Pressable onPress={handleSayHi}>
+            <Text style={styles.quickActionText}>
+              or tap to say hi 👋
+            </Text>
+          </Pressable>
         </Animated.View>
       </View>
     </SafeAreaView>
@@ -355,77 +391,49 @@ const styles = StyleSheet.create({
     lineHeight: typography.lineHeight.relaxed * typography.fontSize.md,
   },
 
-  card: {
-    width: '100%',
-    backgroundColor: colors.surface,
-    borderRadius: borderRadius.lg,
-    padding: spacing.lg,
+  avatarsContainer: {
     marginBottom: spacing.xl,
-    ...shadows.lg,
-  },
-
-  cardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: spacing.sm,
   },
 
-  cardTitle: {
+  avatarRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  avatar: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 3,
+    borderColor: colors.background,
+    ...shadows.md,
+  },
+
+  avatarText: {
     fontSize: typography.fontSize.xl,
     fontWeight: typography.fontWeight.bold,
     color: colors.text.primary,
-    flex: 1,
   },
 
-  memberBadge: {
-    backgroundColor: colors.primary + '20',
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xs,
-    borderRadius: borderRadius.sm,
-  },
-
-  memberBadgeText: {
-    fontSize: typography.fontSize.xs,
-    fontWeight: typography.fontWeight.semibold,
-    color: colors.primary,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-
-  category: {
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.medium,
-    color: colors.text.secondary,
-    textTransform: 'capitalize',
-    marginBottom: spacing.md,
-  },
-
-  infoRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingTop: spacing.md,
-    borderTopWidth: 1,
-    borderTopColor: colors.text.disabled + '30',
-  },
-
-  infoItem: {
-    flex: 1,
-  },
-
-  infoLabel: {
-    fontSize: typography.fontSize.xs,
-    fontWeight: typography.fontWeight.medium,
-    color: colors.text.tertiary,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
+  activityName: {
+    fontSize: typography.fontSize.xl,
+    fontWeight: typography.fontWeight.bold,
+    color: colors.text.primary,
+    textAlign: 'center',
     marginBottom: spacing.xs,
   },
 
-  infoValue: {
-    fontSize: typography.fontSize.md,
-    fontWeight: typography.fontWeight.semibold,
-    color: colors.text.primary,
+  timeText: {
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.medium,
+    color: colors.text.tertiary,
+    textAlign: 'center',
+    marginBottom: spacing.xxl,
   },
 
   buttonContainer: {
@@ -451,12 +459,13 @@ const styles = StyleSheet.create({
     color: colors.text.primary,
   },
 
-  dismissHint: {
+  quickActionText: {
     fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.regular,
+    fontWeight: typography.fontWeight.medium,
     color: colors.text.tertiary,
     textAlign: 'center',
     marginTop: spacing.lg,
+    opacity: 0.8,
   },
 
   errorContainer: {

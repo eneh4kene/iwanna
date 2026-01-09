@@ -130,9 +130,14 @@ CREATE TABLE IF NOT EXISTS pods (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     status VARCHAR(20) DEFAULT 'forming' CHECK (status IN ('forming', 'active', 'completed', 'expired')),
     vibe_summary TEXT,
-    collective_intent JSONB,
+    shared_intent JSONB,  -- Merged intent from all pod members
+    wanna_ids JSONB DEFAULT '[]',  -- Array of wanna UUIDs
+    user_ids JSONB DEFAULT '[]',  -- Array of user UUIDs
     centroid_location GEOGRAPHY(POINT, 4326),
     suggested_venues JSONB DEFAULT '[]',
+    meeting_place_name VARCHAR(255),  -- Reverse geocoded meeting location
+    confirmed_user_ids JSONB DEFAULT '[]',  -- Array of user IDs who confirmed arrival
+    show_up_count INTEGER DEFAULT 0,  -- Count of users who showed up
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
     completed_at TIMESTAMP WITH TIME ZONE

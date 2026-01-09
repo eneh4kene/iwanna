@@ -3,11 +3,11 @@ import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { NavigationContainer, useNavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { Text } from 'react-native';
 import { colors, typography, spacing } from '../constants/theme';
 import { useAuthStore } from '../store/authStore';
 import { usePodStore } from '../store/podStore';
 import { socketService } from '../services/socketService';
+import { CustomTabBar } from '../components/navigation/CustomTabBar';
 
 // Type imports
 import type {
@@ -21,6 +21,7 @@ import type {
 import { AgeGateScreen } from '../screens/AgeGateScreen';
 import { RecoveryPhraseScreen } from '../screens/RecoveryPhraseScreen';
 import { AccountRecoveryScreen } from '../screens/AccountRecoveryScreen';
+import { useNavigation } from '@react-navigation/native';
 
 // Main screens
 import { HomeScreen } from '../screens/HomeScreen';
@@ -28,6 +29,8 @@ import { MatchingScreen } from '../screens/MatchingScreen';
 import { PodsListScreen } from '../screens/PodsListScreen';
 import { PodDetailScreen } from '../screens/PodDetailScreen';
 import { PodMatchedScreen } from '../screens/PodMatchedScreen';
+import { PostPodFeedbackScreen } from '../screens/PostPodFeedbackScreen';
+import { FeaturedPodDetailScreen } from '../screens/FeaturedPodDetailScreen';
 
 // Create navigators
 const RootStack = createNativeStackNavigator<RootStackParamList>();
@@ -73,25 +76,12 @@ function PodsStackNavigator() {
  * Main Tabs Navigator
  */
 function MainTabsNavigator() {
-  const activePods = usePodStore((state) => state.activePods);
-
+  // Badge is now handled reactively in CustomTabBar component
   return (
     <MainTabs.Navigator
+      tabBar={(props) => <CustomTabBar {...props} />}
       screenOptions={{
         headerShown: false,
-        tabBarStyle: {
-          backgroundColor: colors.surface,
-          borderTopWidth: 0,
-          paddingTop: 8,
-          paddingBottom: 8,
-          height: 60,
-        },
-        tabBarActiveTintColor: colors.primary,
-        tabBarInactiveTintColor: colors.text.tertiary,
-        tabBarLabelStyle: {
-          fontSize: typography.fontSize.xs,
-          fontWeight: typography.fontWeight.semibold,
-        },
       }}
     >
       <MainTabs.Screen
@@ -99,9 +89,6 @@ function MainTabsNavigator() {
         component={HomeStackNavigator}
         options={{
           tabBarLabel: 'Home',
-          tabBarIcon: ({ color }) => (
-            <Text style={{ fontSize: 24, color }}>🏠</Text>
-          ),
         }}
       />
       <MainTabs.Screen
@@ -109,16 +96,6 @@ function MainTabsNavigator() {
         component={PodsStackNavigator}
         options={{
           tabBarLabel: 'Pods',
-          tabBarBadge: activePods.length > 0 ? activePods.length : undefined,
-          tabBarBadgeStyle: {
-            backgroundColor: colors.primary,
-            color: colors.text.primary,
-            fontSize: typography.fontSize.xs,
-            fontWeight: typography.fontWeight.bold,
-          },
-          tabBarIcon: ({ color }) => (
-            <Text style={{ fontSize: 24, color }}>👥</Text>
-          ),
         }}
       />
     </MainTabs.Navigator>
@@ -132,12 +109,13 @@ function MainTabsNavigator() {
 export function AppNavigator() {
   const navigationRef = useNavigationContainerRef();
   const [isReady, setIsReady] = useState(false);
-  const [initialRoute, setInitialRoute] = useState<string>('AgeGate');
+  const [initialRoute, setInitialRoute] = useState<keyof RootStackParamList>('AgeGate');
 
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const recoveryPhrase = useAuthStore((state) => state.recoveryPhrase);
   const loadUser = useAuthStore((state) => state.loadUser);
   const connectSocket = usePodStore((state) => state.connectSocket);
+  const fetchActivePods = usePodStore((state) => state.fetchActivePods);
 
   // Initialize app
   useEffect(() => {
@@ -186,8 +164,9 @@ export function AppNavigator() {
           index: 0,
           routes: [{ name: 'MainTabs' }],
         });
-        // Connect to WebSocket
+        // Connect to WebSocket and fetch pods immediately for badge counter
         connectSocket();
+        fetchActivePods();
       }
     } else {
       const currentRoute = navigationRef.getCurrentRoute()?.name;
@@ -248,9 +227,26 @@ export function AppNavigator() {
           contentStyle: { backgroundColor: colors.background },
         }}
       >
-        <RootStack.Screen name="AgeGate" component={AgeGateScreen} />
+        <RootStack.Screen 
+          name="AgeGate" 
+          component={() => {
+            const navigation = useNavigation();
+            return <AgeGateScreen onComplete={() => {
+              // Navigation handled by useEffect in AppNavigator
+            }} />;
+          }} 
+        />
         <RootStack.Screen name="RecoveryPhrase" component={RecoveryPhraseScreen} />
-        <RootStack.Screen name="AccountRecovery" component={AccountRecoveryScreen} />
+        <RootStack.Screen 
+          name="AccountRecovery" 
+          component={() => {
+            const navigation = useNavigation();
+            return <AccountRecoveryScreen 
+              onSuccess={() => navigation.navigate('MainTabs' as never)} 
+              onBack={() => navigation.goBack()} 
+            />;
+          }} 
+        />
         <RootStack.Screen name="MainTabs" component={MainTabsNavigator} />
 
         {/* Modal screens */}
@@ -260,6 +256,22 @@ export function AppNavigator() {
           options={{
             presentation: 'modal',
             animation: 'slide_from_bottom',
+          }}
+        />
+        <RootStack.Screen
+          name="PostPodFeedback"
+          component={PostPodFeedbackScreen}
+          options={{
+            presentation: 'modal',
+            animation: 'slide_from_bottom',
+          }}
+        />
+        <RootStack.Screen
+          name="FeaturedPodDetail"
+          component={FeaturedPodDetailScreen}
+          options={{
+            presentation: 'card',
+            animation: 'slide_from_right',
           }}
         />
       </RootStack.Navigator>

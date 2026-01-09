@@ -9,7 +9,8 @@
     "newArchEnabled": true,
     "jsEngine": "hermes",
     "extra": {
-      "apiUrl": "http://192.168.1.252:3001/api/v1"
+      "apiUrl": "http://192.168.1.252:3001/api/v1",
+      "wsUrl": "http://192.168.1.252:3001"
     },
     "splash": {
       "image": "./assets/splash-icon.png",
@@ -18,7 +19,8 @@
     },
     "ios": {
       "supportsTablet": true,
-      "jsEngine": "jsc"
+      "jsEngine": "jsc",
+      "bundleIdentifier": "com.anonymous.mobile"
     },
     "android": {
       "adaptiveIcon": {
@@ -31,6 +33,9 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      "expo-secure-store"
+    ]
   }
 }

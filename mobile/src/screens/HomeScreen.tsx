@@ -22,6 +22,9 @@ import * as Haptics from 'expo-haptics';
 import { colors, typography, spacing, borderRadius, animation } from '../constants/theme';
 import { useAuthStore } from '../store/authStore';
 import { useWannaStore } from '../store/wannaStore';
+import { FloatingMoodButton } from '../components/common/FloatingMoodButton';
+import { PulsingButton } from '../components/common/PulsingButton';
+import { RateLimitDots } from '../components/common/RateLimitDots';
 
 const MOOD_EMOJIS = ['😎', '🤩', '🧠', '💬', '🎨', '🔥', '🌟', '✨'];
 
@@ -44,6 +47,7 @@ export const HomeScreen: React.FC = () => {
 
   const [text, setText] = useState('');
   const [selectedMood, setSelectedMood] = useState<string | undefined>();
+  const [currentMoodIndex, setCurrentMoodIndex] = useState(0);
   const [animatedPlaceholder, setAnimatedPlaceholder] = useState('');
   const [currentSuggestionIndex, setCurrentSuggestionIndex] = useState(0);
   const [isTyping, setIsTyping] = useState(true);
@@ -136,6 +140,23 @@ export const HomeScreen: React.FC = () => {
     opacity: buttonOpacity.value,
   }));
 
+  // Handle mood cycling
+  const handleMoodCycle = () => {
+    const nextIndex = (currentMoodIndex + 1) % MOOD_EMOJIS.length;
+    setCurrentMoodIndex(nextIndex);
+    setSelectedMood(MOOD_EMOJIS[nextIndex]);
+  };
+
+  // Calculate wannas used (for rate limit dots)
+  const wannasUsed = user?.accountTier === 'anonymous'
+    ? 5 - remaining
+    : 0;
+  const totalWannas = user?.accountTier === 'anonymous'
+    ? 5
+    : user?.accountTier === 'email'
+    ? 10
+    : 999;
+
   const handleSubmit = async () => {
     if (text.length < 3) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
@@ -189,11 +210,15 @@ export const HomeScreen: React.FC = () => {
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
         <View style={styles.content}>
-          {/* Header */}
+          {/* Header with rate limit dots */}
           <View style={styles.header}>
             <Text style={styles.greeting}>hey {firstName} 👋</Text>
             {user?.accountTier === 'anonymous' && (
-              <Text style={styles.remaining}>{remaining} left today</Text>
+              <RateLimitDots
+                used={wannasUsed}
+                total={totalWannas}
+                tierName={user?.accountTier}
+              />
             )}
           </View>
 
@@ -224,52 +249,42 @@ export const HomeScreen: React.FC = () => {
                   />
                 </View>
               </View>
-            </View>
-            <Text style={styles.charCount}>{text.length}/200</Text>
-          </View>
 
-          {/* Mood Selector */}
-          <View style={styles.moodSection}>
-            <Text style={styles.moodLabel}>How are you feeling?</Text>
-            <View style={styles.moodGrid}>
-              {MOOD_EMOJIS.map((emoji) => (
-                <Pressable
-                  key={emoji}
-                  style={[
-                    styles.moodButton,
-                    selectedMood === emoji && styles.moodButtonSelected,
-                  ]}
-                  onPress={() => {
-                    setSelectedMood(selectedMood === emoji ? undefined : emoji);
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  }}
-                >
-                  <Text style={styles.moodEmoji}>{emoji}</Text>
-                </Pressable>
-              ))}
+              {/* Floating Mood Button - positioned inside input tile */}
+              {text.length > 0 && (
+                <View style={styles.floatingMoodContainer}>
+                  <FloatingMoodButton
+                    selectedMood={selectedMood}
+                    onPress={handleMoodCycle}
+                  />
+                </View>
+              )}
             </View>
-          </View>
 
-          {/* Submit Button */}
-          <Animated.View style={[styles.buttonWrapper, animatedButtonStyle]}>
-            <Pressable
-              style={[
-                styles.button,
-                (text.length < 3 || isCreating) && styles.buttonDisabled,
-              ]}
-              onPress={handleSubmit}
-              disabled={text.length < 3 || isCreating}
-            >
-              <Text style={styles.buttonText}>
-                {isCreating ? 'Finding your vibe...' : 'Find your vibe'}
+            {/* Character counter - only show when approaching limit */}
+            {text.length >= 180 && (
+              <Text style={[styles.charCount, text.length >= 190 && styles.charCountWarning]}>
+                {text.length}/200
               </Text>
-            </Pressable>
-          </Animated.View>
+            )}
+          </View>
 
-          {/* Info */}
-          <Text style={styles.info}>
-            We'll match you with 2-4 people nearby who feel the same way ✨
-          </Text>
+          {/* Submit Button - only visible when text.length >= 3 */}
+          {text.length >= 3 && (
+            <PulsingButton
+              title={isCreating ? 'finding your vibe...' : 'find your vibe'}
+              onPress={handleSubmit}
+              disabled={isCreating}
+              style={styles.submitButton}
+            />
+          )}
+
+          {/* Info hint - only show when no text */}
+          {text.length === 0 && (
+            <Text style={styles.info}>
+              we'll match you with 2-4 people nearby who feel the same way ✨
+            </Text>
+          )}
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -379,52 +394,17 @@ const styles = StyleSheet.create({
     fontSize: typography.fontSize.xs,
     color: colors.text.tertiary,
   },
-  moodSection: {
-    marginBottom: spacing.xl,
+  charCountWarning: {
+    color: colors.accentYellow,
   },
-  moodLabel: {
-    fontSize: typography.fontSize.md,
-    color: colors.text.secondary,
-    marginBottom: spacing.md,
+  floatingMoodContainer: {
+    position: 'absolute',
+    bottom: spacing.md,
+    right: spacing.md,
   },
-  moodGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.md,
-  },
-  moodButton: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: colors.surface,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: 'transparent',
-  },
-  moodButtonSelected: {
-    borderColor: colors.primary,
-    backgroundColor: colors.primary + '30',
-  },
-  moodEmoji: {
-    fontSize: 28,
-  },
-  buttonWrapper: {
+  submitButton: {
+    marginTop: spacing.lg,
     marginBottom: spacing.lg,
-  },
-  button: {
-    backgroundColor: colors.primary,
-    paddingVertical: spacing.lg,
-    borderRadius: borderRadius.lg,
-    alignItems: 'center',
-  },
-  buttonDisabled: {
-    opacity: 0.4,
-  },
-  buttonText: {
-    color: colors.text.primary,
-    fontSize: typography.fontSize.lg,
-    fontWeight: typography.fontWeight.semibold,
   },
   info: {
     fontSize: typography.fontSize.sm,

@@ -6,6 +6,9 @@ import { appConfig } from '../config';
 import { Intent, AppError } from '../types';
 import { podService } from './podService';
 import { notificationService } from './notificationService';
+import { geocodingService } from './geocodingService';
+import { aiChatService } from './aiChatService';
+import { chatService } from './chatService';
 
 /**
  * Wanna with location for matching
@@ -70,18 +73,35 @@ class MatchingService {
       throw new AppError('Wanna not found', 404);
     }
 
-    // Find nearby wannas using Redis GEORADIUS
-    const nearbyWannaIds = await this.findNearbyWannas(
+    // Find nearby wannas using Redis GEORADIUS (try default radius first)
+    let nearbyWannaIds = await this.findNearbyWannas(
       wanna.location.latitude,
       wanna.location.longitude,
       appConfig.matchingRadiusMiles
     );
 
     // Filter out the current wanna
-    const candidateWannaIds = nearbyWannaIds.filter(id => id !== wannaId);
+    let candidateWannaIds = nearbyWannaIds.filter(id => id !== wannaId);
+
+    // If no matches with default radius, try fallback radius (one-time expansion)
+    if (candidateWannaIds.length === 0 && appConfig.fallbackRadiusMiles > appConfig.matchingRadiusMiles) {
+      logger.info('No matches at default radius, trying fallback', {
+        wannaId,
+        defaultRadius: appConfig.matchingRadiusMiles,
+        fallbackRadius: appConfig.fallbackRadiusMiles,
+      });
+
+      nearbyWannaIds = await this.findNearbyWannas(
+        wanna.location.latitude,
+        wanna.location.longitude,
+        appConfig.fallbackRadiusMiles
+      );
+
+      candidateWannaIds = nearbyWannaIds.filter(id => id !== wannaId);
+    }
 
     if (candidateWannaIds.length === 0) {
-      logger.info('No nearby wannas found', { wannaId });
+      logger.info('No nearby wannas found (even with fallback)', { wannaId });
       return [];
     }
 
@@ -98,9 +118,9 @@ class MatchingService {
     // Sort by total score (highest first)
     compatibilityScores.sort((a, b) => b.totalScore - a.totalScore);
 
-    // Return top matches (at least threshold score of 0.5)
+    // Return top matches (at least threshold score of 0.40) - Temporarily lowered for cross-location testing
     const matches = compatibilityScores
-      .filter(score => score.totalScore >= 0.5)
+      .filter(score => score.totalScore >= 0.40)
       .map(score => score.wannaId2);
 
     logger.info('Matches found', {
@@ -136,14 +156,25 @@ class MatchingService {
     const topMatches = matchIds.slice(0, appConfig.maxPodSize - 1);
     const matchWannas = await this.getMultipleWannasForMatching(topMatches);
 
-    // Build pod candidate
+    // Build pod candidate - filter out duplicate users
     const allWannas = [sourceWanna, ...matchWannas];
-    const wannaIds = allWannas.map(w => w.id);
-    const userIds = allWannas.map(w => w.userId);
 
-    // Check minimum pod size
+    // Remove wannas from the same user (keep only the first wanna per user)
+    const seenUserIds = new Set<string>();
+    const uniqueWannas = allWannas.filter(wanna => {
+      if (seenUserIds.has(wanna.userId)) {
+        return false;
+      }
+      seenUserIds.add(wanna.userId);
+      return true;
+    });
+
+    const wannaIds = uniqueWannas.map(w => w.id);
+    const userIds = uniqueWannas.map(w => w.userId);
+
+    // Check minimum pod size (after filtering duplicates)
     if (userIds.length < appConfig.minPodSize) {
-      logger.info('Not enough users for pod', {
+      logger.info('Not enough unique users for pod', {
         wannaId,
         required: appConfig.minPodSize,
         found: userIds.length,
@@ -153,17 +184,18 @@ class MatchingService {
 
     // Calculate centroid (geographic center)
     const centroid = this.calculateCentroid(
-      allWannas.map(w => w.location)
+      uniqueWannas.map(w => w.location)
     );
 
     // Merge intents to create shared intent
-    const sharedIntent = this.mergeIntents(allWannas.map(w => w.intent));
+    const sharedIntent = this.mergeIntents(uniqueWannas.map(w => w.intent));
 
-    // Calculate average compatibility
-    const avgCompatibility = matchWannas.reduce((sum, matchWanna) => {
+    // Calculate average compatibility (use uniqueWannas without the source)
+    const uniqueMatchWannas = uniqueWannas.slice(1);
+    const avgCompatibility = uniqueMatchWannas.reduce((sum, matchWanna) => {
       const compat = this.calculateCompatibility(sourceWanna, matchWanna);
       return sum + compat.totalScore;
-    }, 0) / matchWannas.length;
+    }, 0) / uniqueMatchWannas.length;
 
     // Create pod in database
     const podId = await this.createPod({
@@ -312,7 +344,7 @@ class MatchingService {
         ST_Y(location::geometry) as latitude,
         ST_X(location::geometry) as longitude
       FROM wannas
-      WHERE id = $1 AND status = 'active'`,
+      WHERE id = $1 AND status = 'active' AND expires_at > NOW()`,
       [wannaId]
     );
 
@@ -362,7 +394,7 @@ class MatchingService {
         ST_Y(location::geometry) as latitude,
         ST_X(location::geometry) as longitude
       FROM wannas
-      WHERE id = ANY($1) AND status = 'active'`,
+      WHERE id = ANY($1) AND status = 'active' AND expires_at > NOW()`,
       [wannaIds]
     );
 
@@ -506,7 +538,7 @@ class MatchingService {
   private mergeIntents(intents: Intent[]): Partial<Intent> {
     if (intents.length === 0) {
       return {
-        activity: 'group activity',
+        activity: 'hang out',
         category: 'conversation',
         socialPreference: 'small_group',
       };
@@ -516,7 +548,7 @@ class MatchingService {
     const firstIntent = intents[0];
     if (!firstIntent) {
       return {
-        activity: 'group activity',
+        activity: 'hang out',
         category: 'conversation',
         socialPreference: 'small_group',
       };
@@ -546,8 +578,14 @@ class MatchingService {
       intent.keywords.forEach(kw => allKeywords.add(kw));
     });
 
+    // Create a human-friendly activity name from keywords
+    const topKeywords = Array.from(allKeywords).slice(0, 2);
+    const activityName = topKeywords.length > 0
+      ? topKeywords.join(' & ')
+      : mostCommonCategory.replace('_', ' ');
+
     return {
-      activity: `${mostCommonCategory} activity`,
+      activity: activityName,
       category: mostCommonCategory,
       energyLevel: firstIntent.energyLevel,
       socialPreference: 'small_group',
@@ -565,15 +603,29 @@ class MatchingService {
       Date.now() + appConfig.podExpiryHours * 60 * 60 * 1000
     );
 
+    // Reverse geocode the centroid to get a place name
+    let meetingPlaceName: string | null = null;
+    try {
+      meetingPlaceName = await geocodingService.reverseGeocode(
+        candidate.centroid.latitude,
+        candidate.centroid.longitude
+      );
+    } catch (error) {
+      logger.warn('Failed to reverse geocode pod location', {
+        podId,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+
     await query(
       `INSERT INTO pods (
         id, wanna_ids, user_ids, centroid_location, shared_intent,
-        status, expires_at
+        status, expires_at, meeting_place_name
       )
       VALUES (
         $1, $2, $3,
         ST_SetSRID(ST_MakePoint($4, $5), 4326)::geography,
-        $6, 'active', $7
+        $6, 'active', $7, $8
       )`,
       [
         podId,
@@ -583,10 +635,54 @@ class MatchingService {
         candidate.centroid.latitude,
         JSON.stringify(candidate.sharedIntent),
         expiresAt,
+        meetingPlaceName,
       ]
     );
 
+    // Send AI icebreaker message
+    this.sendAiIcebreaker(
+      podId,
+      candidate.sharedIntent.activity || 'hang out',
+      candidate.userIds.length,
+      meetingPlaceName ?? undefined
+    ).catch((error) => {
+      logger.error('Failed to send AI icebreaker', { podId, error });
+    });
+
     return podId;
+  }
+
+  /**
+   * Send AI icebreaker message to pod
+   */
+  private async sendAiIcebreaker(
+    podId: string,
+    activity: string,
+    memberCount: number,
+    locationName?: string
+  ): Promise<void> {
+    try {
+      // Check if AI service is available
+      if (!aiChatService.isAvailable()) {
+        logger.info('AI service not available, skipping icebreaker', { podId });
+        return;
+      }
+
+      // Generate icebreaker message
+      const icebreakerMessage = await aiChatService.generateIcebreaker(
+        activity,
+        memberCount,
+        locationName
+      );
+
+      // Send as AI message
+      await chatService.sendAiMessage(podId, icebreakerMessage);
+
+      logger.info('AI icebreaker sent', { podId, activity });
+    } catch (error) {
+      logger.error('Error sending AI icebreaker', { podId, error });
+      // Don't throw - icebreaker is nice-to-have, not critical
+    }
   }
 
   /**

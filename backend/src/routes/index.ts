@@ -4,6 +4,7 @@ import { checkRedisHealth } from '../services/redis';
 import authRoutes from './auth';
 import wannaRoutes from './wannas';
 import podRoutes from './pods';
+import featuredPodRoutes from './featuredPods';
 
 const router = Router();
 
@@ -40,6 +41,7 @@ router.get('/', (_req: Request, res: Response) => {
       auth: '/api/v1/auth',
       wannas: '/api/v1/wannas',
       pods: '/api/v1/pods',
+      featuredPods: '/api/v1/featured-pods',
       health: '/api/v1/health',
     },
   });
@@ -51,5 +53,6 @@ router.get('/', (_req: Request, res: Response) => {
 router.use('/auth', authRoutes);
 router.use('/wannas', wannaRoutes);
 router.use('/pods', podRoutes);
+router.use('/featured-pods', featuredPodRoutes);
 
 export default router;

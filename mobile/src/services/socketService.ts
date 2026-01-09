@@ -1,6 +1,6 @@
 import { io, Socket } from 'socket.io-client';
 import * as SecureStore from 'expo-secure-store';
-import { API_BASE_URL } from '../constants/config';
+import { WS_URL } from '../constants/config';
 
 /**
  * WebSocket event types
@@ -50,6 +50,31 @@ export interface PodCompletedEvent {
   timestamp: string;
 }
 
+export interface ChatMessageEvent {
+  id: string;
+  podId: string;
+  userId: string;
+  username: string;
+  content: string;
+  messageType: 'user' | 'system' | 'ai';
+  attachments?: any[];
+  replyTo?: {
+    messageId: string;
+    username: string;
+    content: string;
+  };
+  createdAt: string;
+}
+
+export interface MemberConfirmedEvent {
+  podId: string;
+  userId: string;
+  username: string;
+  confirmedCount: number;
+  totalCount: number;
+  timestamp: string;
+}
+
 /**
  * Socket Service
  * Manages WebSocket connection to backend
@@ -72,16 +97,22 @@ class SocketService {
     this.isConnecting = true;
 
     try {
-      // Get auth token
-      const token = await SecureStore.getItemAsync('authToken');
+      // Get auth token (must match the key used in api.ts)
+      const token = await SecureStore.getItemAsync('auth_token');
       if (!token) {
         console.error('No auth token found for WebSocket connection');
         this.isConnecting = false;
         return;
       }
 
+      console.log('Connecting to WebSocket...', {
+        url: WS_URL,
+        hasToken: !!token,
+        tokenLength: token.length,
+      });
+
       // Create socket connection
-      this.socket = io(API_BASE_URL, {
+      this.socket = io(WS_URL, {
         auth: { token },
         transports: ['websocket', 'polling'],
         reconnection: true,
@@ -89,6 +120,7 @@ class SocketService {
         reconnectionDelayMax: 5000,
         reconnectionAttempts: this.maxReconnectAttempts,
         timeout: 10000,
+        forceNew: true, // Force new connection
       });
 
       // Connection event handlers
@@ -104,18 +136,32 @@ class SocketService {
       });
 
       this.socket.on('connect_error', (error) => {
-        console.error('WebSocket connection error:', error.message);
+        console.error('WebSocket connection error:', {
+          message: error.message,
+          type: error.type,
+          description: error.description,
+          context: error.context,
+          wsUrl: WS_URL,
+          hasToken: !!token,
+        });
         this.reconnectAttempts++;
         this.isConnecting = false;
 
         if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-          console.error('Max reconnection attempts reached');
+          console.error('Max reconnection attempts reached', {
+            attempts: this.reconnectAttempts,
+            maxAttempts: this.maxReconnectAttempts,
+          });
           this.disconnect();
         }
       });
 
       this.socket.on('error', (error) => {
-        console.error('WebSocket error:', error);
+        console.error('WebSocket error:', {
+          error,
+          message: error?.message || 'Unknown error',
+          type: error?.type || 'Unknown type',
+        });
       });
 
       // Confirmation event
@@ -257,6 +303,36 @@ class SocketService {
   onPodCompleted(callback: (data: PodCompletedEvent) => void): () => void {
     this.on('pod.completed', callback);
     return () => this.off('pod.completed', callback);
+  }
+
+  /**
+   * Subscribe to chat message events
+   */
+  onChatMessage(callback: (data: ChatMessageEvent) => void): () => void {
+    this.on('chat.message', callback);
+    return () => this.off('chat.message', callback);
+  }
+
+  /**
+   * Subscribe to member confirmed events
+   */
+  onMemberConfirmed(callback: (data: MemberConfirmedEvent) => void): () => void {
+    this.on('pod.member_confirmed', callback);
+    return () => this.off('pod.member_confirmed', callback);
+  }
+
+  /**
+   * Send a chat message
+   */
+  sendChatMessage(podId: string, content: string): void {
+    this.emit('chat.send', { podId, content });
+  }
+
+  /**
+   * Send typing indicator
+   */
+  sendTyping(podId: string): void {
+    this.emit('chat.typing', { podId });
   }
 }
 

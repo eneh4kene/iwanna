@@ -182,8 +182,8 @@ class ApiClient {
   /**
    * POST request
    */
-  async post<T = any>(url: string, data?: any): Promise<T> {
-    const response = await this.client.post(url, data);
+  async post<T = any>(url: string, data?: any, config?: any): Promise<T> {
+    const response = await this.client.post(url, data, config);
     return response.data;
   }
 
@@ -200,6 +200,14 @@ class ApiClient {
    */
   async delete<T = any>(url: string): Promise<T> {
     const response = await this.client.delete(url);
+    return response.data;
+  }
+
+  /**
+   * PATCH request
+   */
+  async patch<T = any>(url: string, data?: any): Promise<T> {
+    const response = await this.client.patch(url, data);
     return response.data;
   }
 }

@@ -14,8 +14,8 @@ import { colors, typography, spacing, borderRadius } from '../constants/theme';
 import { useAuthStore } from '../store/authStore';
 
 interface Props {
-  onSuccess: () => void;
-  onBack: () => void;
+  onSuccess?: () => void;
+  onBack?: () => void;
 }
 
 export const AccountRecoveryScreen: React.FC<Props> = ({ onSuccess, onBack }) => {
@@ -37,7 +37,7 @@ export const AccountRecoveryScreen: React.FC<Props> = ({ onSuccess, onBack }) =>
     try {
       await recoverAccount(phrase.trim());
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      onSuccess();
+      onSuccess?.();
     } catch (error) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     }
@@ -50,7 +50,7 @@ export const AccountRecoveryScreen: React.FC<Props> = ({ onSuccess, onBack }) =>
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
         <View style={styles.content}>
-          <Pressable style={styles.backButton} onPress={onBack}>
+          <Pressable style={styles.backButton} onPress={() => onBack?.()}>
             <Text style={styles.backButtonText}>← Back</Text>
           </Pressable>
 

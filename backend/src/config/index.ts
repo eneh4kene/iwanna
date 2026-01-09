@@ -25,13 +25,16 @@ const getEnv = (key: string, defaultValue: string): string => {
 /**
  * Server configuration
  */
+const env = getEnv('NODE_ENV', 'development');
 export const serverConfig = {
   port: parseInt(getEnv('PORT', '3001'), 10),
-  env: getEnv('NODE_ENV', 'development'),
+  env,
   apiVersion: getEnv('API_VERSION', 'v1'),
-  corsOrigins: getEnv('CORS_ORIGIN', 'http://localhost:8081,http://localhost:19006')
-    .split(',')
-    .map(origin => origin.trim()),
+  corsOrigins: env === 'development'
+    ? ['*'] // Allow all origins in development for easier testing
+    : getEnv('CORS_ORIGIN', 'http://localhost:8081,http://localhost:19006')
+        .split(',')
+        .map(origin => origin.trim()),
 };
 
 /**
@@ -115,9 +118,11 @@ export const loggingConfig = {
 export const appConfig = {
   wannaExpiryHours: parseInt(getEnv('WANNA_EXPIRY_HOURS', '6'), 10),
   podExpiryHours: parseInt(getEnv('POD_EXPIRY_HOURS', '3'), 10),
-  matchingRadiusMiles: parseFloat(getEnv('MATCHING_RADIUS_MILES', '5')),
+  matchingRadiusMiles: parseFloat(getEnv('MATCHING_RADIUS_MILES', '3')),
+  fallbackRadiusMiles: parseFloat(getEnv('FALLBACK_RADIUS_MILES', '10')),
   minPodSize: parseInt(getEnv('MIN_POD_SIZE', '2'), 10),
   maxPodSize: parseInt(getEnv('MAX_POD_SIZE', '5'), 10),
+  vibeMinIntervalMinutes: parseInt(getEnv('VIBE_MIN_INTERVAL_MINUTES', '2'), 10),
 };
 
 /**

@@ -21,6 +21,7 @@ import Animated, {
   withTiming,
   withSpring,
   Easing,
+  interpolate,
 } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -101,141 +102,34 @@ const renderMessageWithMentions = (content: string, textStyle: any): React.React
 };
 
 /**
- * Animated Backdrop Component
+ * Empty Chat State Component with Floating Animation
  */
-const BackdropAnimated: React.FC<{
-  opacity: Animated.SharedValue<number>;
-  onPress: () => void;
-}> = ({ opacity, onPress }) => {
+const EmptyChatState: React.FC = () => {
+  const floatY = useSharedValue(0);
+  
+  useEffect(() => {
+    floatY.value = withRepeat(
+      withSequence(
+        withTiming(-8, { duration: 2000, easing: Easing.inOut(Easing.ease) }),
+        withTiming(0, { duration: 2000, easing: Easing.inOut(Easing.ease) })
+      ),
+      -1,
+      false
+    );
+  }, []);
+
   const animatedStyle = useAnimatedStyle(() => ({
-    opacity: opacity.value,
+    transform: [{ translateY: floatY.value }],
   }));
 
   return (
-    <Animated.View style={[styles.backdrop, animatedStyle]}>
-      <Pressable style={StyleSheet.absoluteFill} onPress={onPress} />
-    </Animated.View>
-  );
-};
-
-/**
- * Animated Attachment Menu Component
- */
-const AttachmentMenuAnimated: React.FC<{
-  translateY: Animated.SharedValue<number>;
-  opacity: Animated.SharedValue<number>;
-  onClose: () => void;
-  pod: Pod | null;
-  handleOpenInMaps: () => void;
-  handleTakePhoto: () => Promise<void>;
-  handlePickImage: () => Promise<void>;
-  setShowGifPicker: (show: boolean) => void;
-  setShowEmojiPicker: (show: boolean) => void;
-}> = ({
-  translateY,
-  opacity,
-  onClose,
-  pod,
-  handleOpenInMaps,
-  handleTakePhoto,
-  handlePickImage,
-  setShowGifPicker,
-  setShowEmojiPicker,
-}) => {
-  const animatedStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: translateY.value }],
-    opacity: opacity.value,
-  }));
-
-  return (
-    <Animated.View style={[styles.attachmentMenuContainer, animatedStyle]}>
-      <Pressable
-        onPress={() => {
-          onClose();
-          Alert.alert(
-            'Add Image',
-            'Choose an option',
-            [
-              { text: 'Camera', onPress: handleTakePhoto },
-              { text: 'Photo Library', onPress: handlePickImage },
-              { text: 'Cancel', style: 'cancel' },
-            ]
-          );
-        }}
-        style={({ pressed }) => [
-          styles.attachmentMenuItem,
-          pressed && styles.attachmentMenuItemPressed,
-        ]}
-      >
-        <View style={styles.attachmentMenuItemIcon}>
-          <Ionicons name="camera-outline" size={22} color={colors.primary} />
-        </View>
-        <View style={styles.attachmentMenuItemContent}>
-          <Text style={styles.attachmentMenuItemTitle}>Photo</Text>
-          <Text style={styles.attachmentMenuItemSubtitle}>Camera or library</Text>
-        </View>
-      </Pressable>
-
-      {/* Location option - moved into menu */}
-      {pod?.location && (
-        <Pressable
-          onPress={() => {
-            onClose();
-            handleOpenInMaps();
-          }}
-          style={({ pressed }) => [
-            styles.attachmentMenuItem,
-            pressed && styles.attachmentMenuItemPressed,
-          ]}
-        >
-          <View style={styles.attachmentMenuItemIcon}>
-            <Ionicons name="location-outline" size={22} color={colors.primary} />
-          </View>
-          <View style={styles.attachmentMenuItemContent}>
-            <Text style={styles.attachmentMenuItemTitle}>Location</Text>
-            <Text style={styles.attachmentMenuItemSubtitle}>Open in Maps</Text>
-          </View>
-        </Pressable>
-      )}
-
-      <Pressable
-        onPress={() => {
-          onClose();
-          setShowGifPicker(true);
-        }}
-        style={({ pressed }) => [
-          styles.attachmentMenuItem,
-          pressed && styles.attachmentMenuItemPressed,
-        ]}
-      >
-        <View style={styles.attachmentMenuItemIcon}>
-          <Ionicons name="play-circle-outline" size={22} color={colors.primary} />
-        </View>
-        <View style={styles.attachmentMenuItemContent}>
-          <Text style={styles.attachmentMenuItemTitle}>GIF</Text>
-          <Text style={styles.attachmentMenuItemSubtitle}>Search GIFs</Text>
-        </View>
-      </Pressable>
-
-      <Pressable
-        onPress={() => {
-          onClose();
-          setShowEmojiPicker(true);
-        }}
-        style={({ pressed }) => [
-          styles.attachmentMenuItem,
-          pressed && styles.attachmentMenuItemPressed,
-        ]}
-      >
-        <View style={styles.attachmentMenuItemIcon}>
-          <Ionicons name="happy-outline" size={22} color={colors.primary} />
-        </View>
-        <View style={styles.attachmentMenuItemContent}>
-          <Text style={styles.attachmentMenuItemTitle}>Emoji</Text>
-          <Text style={styles.attachmentMenuItemSubtitle}>Choose emoji</Text>
-        </View>
-      </Pressable>
-    </Animated.View>
+    <View style={styles.emptyChatContainer}>
+      <Animated.View style={animatedStyle}>
+        <Text style={styles.emptyChatEmoji}>👋</Text>
+      </Animated.View>
+      <Text style={styles.emptyChatText}>no messages yet</Text>
+      <Text style={styles.emptyChatHint}>say hi & see where the vibe takes you ✨</Text>
+    </View>
   );
 };
 
@@ -338,14 +232,33 @@ const MemberCard: React.FC<{
 };
 
 /**
- * Chat Message Bubble Component
+ * Chat Message Bubble Component with Entrance Animation
  */
 const ChatMessageBubble: React.FC<{
   message: ChatMessage;
   isCurrentUser: boolean;
-}> = ({ message, isCurrentUser }) => {
+  onLongPress?: (message: ChatMessage) => void;
+  onReplyContextPress?: (messageId: string) => void; // Callback to scroll to referenced message
+  isGroupStart?: boolean; // First message in a group
+  isGroupEnd?: boolean; // Last message in a group
+  showTimestamp?: boolean; // Show timestamp on this message
+}> = ({ message, isCurrentUser, onLongPress, onReplyContextPress, isGroupStart = true, isGroupEnd = true, showTimestamp = true }) => {
   const isSystemMessage = message.messageType === 'system';
   const isAiMessage = message.messageType === 'ai';
+
+  // Entrance animation
+  const opacity = useSharedValue(0);
+  const translateY = useSharedValue(10);
+
+  useEffect(() => {
+    opacity.value = withSpring(1, animation.spring.gentle);
+    translateY.value = withSpring(0, animation.spring.gentle);
+  }, []);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    opacity: opacity.value,
+    transform: [{ translateY: translateY.value }],
+  }));
 
   // System messages (confirmation notifications)
   if (isSystemMessage) {
@@ -359,24 +272,56 @@ const ChatMessageBubble: React.FC<{
   // AI assistant messages (@vibe)
   if (isAiMessage) {
     return (
-      <View style={styles.aiMessageContainer}>
-        <LinearGradient
-          colors={['rgba(255, 200, 100, 0.1)', 'rgba(255, 150, 50, 0.05)']}
-          style={styles.aiMessageBubble}
+      <Animated.View style={[styles.aiMessageContainer, animatedStyle]}>
+        <Pressable
+          onLongPress={() => onLongPress?.(message)}
+          delayLongPress={400}
         >
-          <View style={styles.aiMessageHeader}>
-            <Text style={styles.aiMessageIcon}>✨</Text>
-            <Text style={styles.aiMessageUsername}>@vibe</Text>
-          </View>
-          <Text style={styles.aiMessageText}>{message.content}</Text>
-          <Text style={styles.aiMessageTime}>
-            {new Date(message.createdAt).toLocaleTimeString([], {
-              hour: '2-digit',
-              minute: '2-digit',
-            })}
-          </Text>
-        </LinearGradient>
-      </View>
+          <LinearGradient
+            colors={['rgba(255, 200, 100, 0.1)', 'rgba(255, 150, 50, 0.05)']}
+            style={styles.aiMessageBubble}
+          >
+            {/* Reply context indicator for @vibe's replies */}
+            {message.replyTo && (
+              <Pressable
+                onPress={() => onReplyContextPress?.(message.replyTo!.messageId)}
+                style={({ pressed }) => [
+                  styles.replyContext,
+                  styles.replyContextAi,
+                  pressed && styles.replyContextPressed,
+                ]}
+              >
+                <View style={styles.replyContextBar} />
+                <View style={styles.replyContextContent}>
+                  <Text style={[styles.replyContextUsername, styles.replyContextUsernameAi]}>
+                    replied to {message.replyTo.username === (useAuthStore.getState().user?.username) ? 'you' : `@${message.replyTo.username}`}
+                  </Text>
+                  <Text
+                    style={[styles.replyContextText, styles.replyContextTextAi]}
+                    numberOfLines={1}
+                  >
+                    {message.replyTo.content}
+                  </Text>
+                </View>
+              </Pressable>
+            )}
+
+            <View style={styles.aiMessageHeader}>
+              <Text style={styles.aiMessageIcon}>✨</Text>
+              <Text style={styles.aiMessageUsername}>@vibe</Text>
+            </View>
+            <View style={styles.aiMessageContentRow}>
+              <Text style={styles.aiMessageText}>{message.content}</Text>
+              <Text style={styles.aiMessageTime}>
+                {new Date(message.createdAt).toLocaleTimeString([], {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
+              </Text>
+            </View>
+          </LinearGradient>
+        </Pressable>
+      </Animated.View>
     );
   }
 
@@ -422,47 +367,264 @@ const ChatMessageBubble: React.FC<{
   };
 
   return (
-    <View
+    <Animated.View
       style={[
         styles.messageBubbleContainer,
         isCurrentUser ? styles.messageBubbleRight : styles.messageBubbleLeft,
+        animatedStyle,
       ]}
     >
-      <View
+      <Pressable
+        onLongPress={() => onLongPress?.(message)}
+        delayLongPress={400}
         style={[
           styles.messageBubble,
           isCurrentUser ? styles.messageBubbleUser : styles.messageBubbleOther,
+          // Adjust spacing for grouped messages
+          !isGroupStart && styles.messageBubbleGrouped,
         ]}
       >
-        {!isCurrentUser && (
+        {/* Show username only on first message in group for other users */}
+        {!isCurrentUser && isGroupStart && (
           <Text style={styles.messageUsername}>{message.username}</Text>
         )}
-        
+
+        {/* Reply context indicator */}
+        {message.replyTo && (
+          <Pressable
+            onPress={() => onReplyContextPress?.(message.replyTo!.messageId)}
+            style={({ pressed }) => [
+              styles.replyContext,
+              pressed && styles.replyContextPressed,
+            ]}
+          >
+            <View style={styles.replyContextBar} />
+            <View style={styles.replyContextContent}>
+              <Text style={styles.replyContextUsername}>
+                replied to {message.replyTo.username === (useAuthStore.getState().user?.username) ? 'you' : `@${message.replyTo.username}`}
+              </Text>
+              <Text
+                style={[
+                  styles.replyContextText,
+                  isCurrentUser && styles.replyContextTextUser,
+                ]}
+                numberOfLines={1}
+              >
+                {message.replyTo.content}
+              </Text>
+            </View>
+          </Pressable>
+        )}
+
         {/* Render attachments */}
         {message.attachments && message.attachments.length > 0 && (
           <View style={styles.attachmentsContainer}>
             {message.attachments.map((attachment, index) => renderAttachment(attachment, index))}
           </View>
         )}
-        
+
         {/* Render text content if present */}
-        {message.content && message.content.trim() && (
-          renderMessageWithMentions(message.content, messageTextStyle)
-        )}
-        
-        <View style={styles.messageTimeContainer}>
-          <Text style={[
-            styles.messageTime,
-            isCurrentUser ? styles.messageTimeUser : styles.messageTimeOther,
-          ]}>
-            {new Date(message.createdAt).toLocaleTimeString([], {
-              hour: '2-digit',
-              minute: '2-digit',
-            })}
-          </Text>
+        <View style={styles.messageContentRow}>
+          <View style={styles.messageTextContainer}>
+            {message.content && message.content.trim() && (
+              renderMessageWithMentions(message.content, messageTextStyle)
+            )}
+          </View>
+
+          {/* Show timestamp inline at bottom-right corner (only on last message in group) */}
+          {showTimestamp && isGroupEnd && (
+            <Text style={[
+              styles.messageTimeInline,
+              isCurrentUser ? styles.messageTimeUser : styles.messageTimeOther,
+            ]}>
+              {new Date(message.createdAt).toLocaleTimeString([], {
+                hour: '2-digit',
+                minute: '2-digit',
+              })}
+            </Text>
+          )}
         </View>
-      </View>
-    </View>
+      </Pressable>
+    </Animated.View>
+  );
+};
+
+/**
+ * Animated Send Button Component with Glow Effect
+ */
+const AnimatedSendButton: React.FC<{
+  onPress: () => void;
+  disabled: boolean;
+  hasContent: boolean;
+}> = ({ onPress, disabled, hasContent }) => {
+  const scale = useSharedValue(1);
+  const glowOpacity = useSharedValue(hasContent ? 0.3 : 0);
+
+  useEffect(() => {
+    if (hasContent && !disabled) {
+      glowOpacity.value = withRepeat(
+        withSequence(
+          withTiming(0.5, { duration: 1500, easing: Easing.inOut(Easing.ease) }),
+          withTiming(0.3, { duration: 1500, easing: Easing.inOut(Easing.ease) })
+        ),
+        -1,
+        false
+      );
+    } else {
+      glowOpacity.value = 0;
+    }
+  }, [hasContent, disabled]);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: scale.value }],
+  }));
+
+  const glowStyle = useAnimatedStyle(() => ({
+    opacity: glowOpacity.value,
+  }));
+
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      onPressIn={() => {
+        scale.value = withSpring(0.95, animation.spring.gentle);
+      }}
+      onPressOut={() => {
+        scale.value = withSpring(1, animation.spring.gentle);
+      }}
+      style={({ pressed }) => [
+        styles.sendButton,
+        pressed && styles.sendButtonPressed,
+        disabled && styles.sendButtonDisabled,
+      ]}
+    >
+      <Animated.View style={[styles.sendButtonGlow, glowStyle]} />
+      <Animated.View style={animatedStyle}>
+        <Ionicons name="arrow-up" size={20} color="#FFFFFF" />
+      </Animated.View>
+    </Pressable>
+  );
+};
+
+/**
+ * Animated Plus/Close Button Component - Toggles between + and ×
+ */
+const AnimatedPlusButton: React.FC<{
+  onPress: () => void;
+  isActive: boolean;
+}> = ({ onPress, isActive }) => {
+  const rotation = useSharedValue(0);
+  const opacity = useSharedValue(1);
+
+  useEffect(() => {
+    // Toggle rotation: 0deg = plus, 45deg = close
+    rotation.value = withSpring(isActive ? 45 : 0, animation.spring.gentle);
+  }, [isActive]);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${rotation.value}deg` }],
+    opacity: opacity.value,
+  }));
+
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.attachButton,
+        pressed && styles.attachButtonPressed,
+        isActive && styles.attachButtonActive,
+      ]}
+    >
+      <Animated.View style={animatedStyle}>
+        <Ionicons name="add" size={22} color={colors.text.primary} />
+      </Animated.View>
+    </Pressable>
+  );
+};
+
+/**
+ * Animated Attachment Menu Component (Bottom Sheet Style)
+ */
+const AnimatedAttachmentMenu: React.FC<{
+  onClose: () => void;
+  onPhotoPress: () => void;
+  onGifPress: () => void;
+  onEmojiPress: () => void;
+  onLocationPress?: () => void;
+}> = ({ onClose, onPhotoPress, onGifPress, onEmojiPress, onLocationPress }) => {
+  const translateY = useSharedValue(-20);
+  const opacity = useSharedValue(0);
+  const scale = useSharedValue(0.95);
+
+  useEffect(() => {
+    translateY.value = withSpring(0, animation.spring.gentle);
+    opacity.value = withTiming(1, { duration: animation.duration.fast });
+    scale.value = withSpring(1, animation.spring.gentle);
+  }, []);
+
+  const menuStyle = useAnimatedStyle(() => ({
+    transform: [
+      { translateY: translateY.value },
+      { scale: scale.value },
+    ],
+    opacity: opacity.value,
+  }));
+
+  const menuItems = [
+    {
+      icon: 'camera-outline' as const,
+      title: 'Photo',
+      subtitle: 'Camera or library',
+      onPress: onPhotoPress,
+    },
+    {
+      icon: 'film-outline' as const,
+      title: 'GIF',
+      subtitle: 'Search GIFs',
+      onPress: onGifPress,
+    },
+    {
+      icon: 'happy-outline' as const,
+      title: 'Emoji',
+      subtitle: 'Choose emoji',
+      onPress: onEmojiPress,
+    },
+  ];
+
+  if (onLocationPress) {
+    menuItems.push({
+      icon: 'camera-outline' as const, // Using camera icon as fallback since location-outline not in type
+      title: 'Location',
+      subtitle: 'Share location',
+      onPress: onLocationPress,
+    });
+  }
+
+  return (
+    <Animated.View style={[styles.attachmentMenuContainer, menuStyle]}>
+      {menuItems.map((item, index) => (
+        <Pressable
+          key={item.title}
+          onPress={() => {
+            item.onPress();
+          }}
+          style={({ pressed }) => [
+            styles.attachmentMenuItem,
+            pressed && styles.attachmentMenuItemPressed,
+            index < menuItems.length - 1 && styles.attachmentMenuItemBorder,
+          ]}
+        >
+          <View style={styles.attachmentMenuItemIcon}>
+            <Ionicons name={item.icon} size={20} color={colors.primary} />
+          </View>
+          <View style={styles.attachmentMenuItemContent}>
+            <Text style={styles.attachmentMenuItemTitle}>{item.title}</Text>
+            <Text style={styles.attachmentMenuItemSubtitle}>{item.subtitle}</Text>
+          </View>
+        </Pressable>
+      ))}
+    </Animated.View>
   );
 };
 
@@ -544,6 +706,7 @@ export const PodDetailScreen: React.FC = () => {
   const [pod, setPod] = useState<Pod | null>(null);
   const [messageInput, setMessageInput] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null); // Message being replied to
   const [isConfirming, setIsConfirming] = useState(false);
   const [showMentionSuggestions, setShowMentionSuggestions] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
@@ -554,11 +717,6 @@ export const PodDetailScreen: React.FC = () => {
   const [isTyping, setIsTyping] = useState(false); // Someone else is typing
 
   const chatListRef = useRef<FlatList>(null);
-  
-  // Animation values for attachment menu slide-up
-  const attachmentMenuTranslateY = useSharedValue(300);
-  const attachmentMenuOpacity = useSharedValue(0);
-  const backdropOpacity = useSharedValue(0);
 
   // Find the pod from store
   useEffect(() => {
@@ -580,19 +738,6 @@ export const PodDetailScreen: React.FC = () => {
       }, 100);
     }
   }, [chatMessages.length]);
-
-  // Animate attachment menu
-  useEffect(() => {
-    if (showAttachmentMenu) {
-      attachmentMenuTranslateY.value = withSpring(0, animation.spring.gentle);
-      attachmentMenuOpacity.value = withTiming(1, { duration: animation.duration.normal });
-      backdropOpacity.value = withTiming(1, { duration: animation.duration.normal });
-    } else {
-      attachmentMenuTranslateY.value = withSpring(300, animation.spring.gentle);
-      attachmentMenuOpacity.value = withTiming(0, { duration: animation.duration.fast });
-      backdropOpacity.value = withTiming(0, { duration: animation.duration.fast });
-    }
-  }, [showAttachmentMenu]);
 
   // Calculate time remaining
   const getTimeRemaining = (): string => {
@@ -705,12 +850,48 @@ export const PodDetailScreen: React.FC = () => {
 
     const messageContent = trimmedMessage || '';
     const messageAttachments = [...attachments];
-    
-    // Clear input and attachments immediately
+    const replyToId = replyingTo?.id;
+
+    // Clear input, attachments, and reply state immediately
     setMessageInput('');
     setAttachments([]);
-    
-    await sendMessage(podId, messageContent, messageAttachments);
+    setReplyingTo(null);
+
+    await sendMessage(podId, messageContent, messageAttachments, replyToId);
+  };
+
+  // Handle long-press to reply
+  const handleReply = (message: ChatMessage): void => {
+    // Don't reply to system messages
+    if (message.messageType === 'system') return;
+
+    setReplyingTo(message);
+    // Focus input (handled automatically by the reply bar being visible)
+  };
+
+  // Cancel reply
+  const cancelReply = (): void => {
+    setReplyingTo(null);
+  };
+
+  // Handle tapping reply context to scroll to original message
+  const handleReplyContextPress = (messageId: string): void => {
+    const messageIndex = chatMessages.findIndex(m => m.id === messageId);
+    if (messageIndex !== -1 && chatListRef.current) {
+      try {
+        // Scroll to the message
+        chatListRef.current.scrollToIndex({
+          index: messageIndex,
+          animated: true,
+          viewPosition: 0.5, // Center the message on screen
+        });
+      } catch (error) {
+        // Fallback: If scrollToIndex fails (e.g., message not rendered yet),
+        // use scrollToOffset as a backup
+        console.log('scrollToIndex failed, message might not be rendered yet:', error);
+        // Could implement a fallback here if needed
+      }
+    }
   };
 
   // Handle image picker
@@ -947,18 +1128,57 @@ export const PodDetailScreen: React.FC = () => {
 
   // Render empty chat state
   const renderEmptyChat = () => (
-    <View style={styles.emptyChatContainer}>
-      <Text style={styles.emptyChatEmoji}>👋</Text>
-      <Text style={styles.emptyChatText}>no messages yet</Text>
-      <Text style={styles.emptyChatHint}>say hi & see where the vibe takes you ✨</Text>
-    </View>
+    <EmptyChatState />
   );
+
+  // Helper function to determine if messages should be grouped
+  const shouldGroupMessages = (current: ChatMessage, previous: ChatMessage | null): boolean => {
+    if (!previous) return false;
+    if (current.messageType === 'system' || current.messageType === 'ai') return false;
+    if (previous.messageType === 'system' || previous.messageType === 'ai') return false;
+    if (current.userId !== previous.userId) return false;
+
+    // Check time difference (group if within 2 minutes)
+    const currentTime = new Date(current.createdAt).getTime();
+    const previousTime = new Date(previous.createdAt).getTime();
+    const diffMinutes = (currentTime - previousTime) / 1000 / 60;
+
+    return diffMinutes <= 2;
+  };
+
+  // Helper function to get grouping info for a message
+  const getMessageGroupInfo = (index: number): { isGroupStart: boolean; isGroupEnd: boolean } => {
+    const message = chatMessages[index];
+    if (!message) return { isGroupStart: true, isGroupEnd: true };
+
+    const previousMessage = index > 0 ? chatMessages[index - 1] : null;
+    const nextMessage = index < chatMessages.length - 1 ? chatMessages[index + 1] : null;
+
+    const groupedWithPrevious = shouldGroupMessages(message, previousMessage);
+    const groupedWithNext = nextMessage ? shouldGroupMessages(nextMessage, message) : false;
+
+    return {
+      isGroupStart: !groupedWithPrevious,
+      isGroupEnd: !groupedWithNext,
+    };
+  };
 
   return (
     <SafeAreaView style={styles.container}>
       {/* Clean Header */}
       <View style={styles.modernHeader}>
-        {/* Left: Avatars */}
+        {/* Left: Back Button */}
+        <Pressable
+          onPress={() => navigation.goBack()}
+          style={({ pressed }) => [
+            styles.backButtonHeader,
+            pressed && styles.backButtonHeaderPressed,
+          ]}
+        >
+          <Ionicons name="chevron-back" size={24} color={colors.text.primary} />
+        </Pressable>
+
+        {/* Center: Avatars */}
         <View style={styles.avatarRow}>
           {pod.members.slice(0, 4).map((member, index) => (
             <View
@@ -986,9 +1206,9 @@ export const PodDetailScreen: React.FC = () => {
           )}
         </View>
 
-        {/* Center: Activity & Timer */}
+        {/* Right: Activity & Timer */}
         <View style={styles.headerCenter}>
-          <Text style={styles.modernActivity}>{pod.activity}</Text>
+          <Text style={styles.modernActivity} numberOfLines={1}>{pod.activity}</Text>
           <View style={styles.timerRow}>
             {pod.status === 'active' && (
               <View style={styles.liveDot} />
@@ -999,7 +1219,7 @@ export const PodDetailScreen: React.FC = () => {
           </View>
         </View>
 
-        {/* Right: Menu */}
+        {/* Far Right: Menu */}
         <Pressable
           onPress={handleMenuPress}
           style={({ pressed }) => [
@@ -1020,12 +1240,20 @@ export const PodDetailScreen: React.FC = () => {
           ref={chatListRef}
           data={chatMessages}
           keyExtractor={(item) => item.id}
-          renderItem={({ item }) => (
-            <ChatMessageBubble
-              message={item}
-              isCurrentUser={item.userId === userId}
-            />
-          )}
+          renderItem={({ item, index }) => {
+            const groupInfo = getMessageGroupInfo(index);
+            return (
+              <ChatMessageBubble
+                message={item}
+                isCurrentUser={item.userId === userId}
+                onLongPress={handleReply}
+                onReplyContextPress={handleReplyContextPress}
+                isGroupStart={groupInfo.isGroupStart}
+                isGroupEnd={groupInfo.isGroupEnd}
+                showTimestamp={groupInfo.isGroupEnd}
+              />
+            );
+          }}
           ListHeaderComponent={renderHeader}
           ListFooterComponent={renderFooter}
           ListEmptyComponent={renderEmptyChat}
@@ -1035,6 +1263,17 @@ export const PodDetailScreen: React.FC = () => {
             if (chatMessages.length > 0) {
               chatListRef.current?.scrollToEnd({ animated: true });
             }
+          }}
+          onScrollToIndexFailed={(info) => {
+            // Handle scroll failure gracefully
+            const wait = new Promise(resolve => setTimeout(resolve, 500));
+            wait.then(() => {
+              chatListRef.current?.scrollToIndex({
+                index: info.index,
+                animated: true,
+                viewPosition: 0.5,
+              });
+            });
           }}
         />
 
@@ -1083,8 +1322,29 @@ export const PodDetailScreen: React.FC = () => {
         {/* Chat Input */}
         {(pod.status === 'forming' || pod.status === 'active') && (
           <>
-            {/* Backdrop overlay with animation */}
-            {showAttachmentMenu && <BackdropAnimated opacity={backdropOpacity} onPress={() => setShowAttachmentMenu(false)} />}
+            {/* Reply Indicator Bar */}
+            {replyingTo && (
+              <View style={styles.replyIndicatorContainer}>
+                <View style={styles.replyIndicatorBar} />
+                <View style={styles.replyIndicatorContent}>
+                  <Text style={styles.replyIndicatorLabel}>
+                    ↩ Replying to @{replyingTo.username}
+                  </Text>
+                  <Text style={styles.replyIndicatorPreview} numberOfLines={1}>
+                    {replyingTo.content}
+                  </Text>
+                </View>
+                <Pressable
+                  onPress={cancelReply}
+                  style={({ pressed }) => [
+                    styles.replyIndicatorCloseButton,
+                    pressed && styles.replyIndicatorCloseButtonPressed,
+                  ]}
+                >
+                  <Ionicons name="close" size={18} color={colors.text.tertiary} />
+                </Pressable>
+              </View>
+            )}
 
             {/* Attachment Preview */}
             {attachments.length > 0 && (
@@ -1140,20 +1400,14 @@ export const PodDetailScreen: React.FC = () => {
             )}
 
             <View style={styles.chatInputContainer}>
-              {/* Integrated Attachment Button inside input */}
+              {/* Input Field with Plus Button Inside */}
               <View style={styles.inputWrapper}>
-                {!messageInput.trim() && attachments.length === 0 && (
-                  <Pressable
-                    onPress={() => setShowAttachmentMenu(!showAttachmentMenu)}
-                    style={({ pressed }) => [
-                      styles.attachButtonIntegrated,
-                      pressed && styles.attachButtonIntegratedPressed,
-                    ]}
-                  >
-                    <Ionicons name="add-outline" size={20} color={colors.text.tertiary} />
-                  </Pressable>
-                )}
-                
+                {/* Plus Button Inside Input (Left Side) */}
+                <AnimatedPlusButton
+                  onPress={() => setShowAttachmentMenu(!showAttachmentMenu)}
+                  isActive={showAttachmentMenu}
+                />
+
                 <TextInput
                   style={styles.chatInput}
                   value={messageInput}
@@ -1165,36 +1419,47 @@ export const PodDetailScreen: React.FC = () => {
                 />
               </View>
 
-              <Pressable
+              {/* Send Button */}
+              <AnimatedSendButton
                 onPress={handleSendMessage}
                 disabled={(!messageInput.trim() && attachments.length === 0) || isSendingMessage}
-                style={({ pressed }) => [
-                  styles.sendButton,
-                  pressed && styles.sendButtonPressed,
-                  ((!messageInput.trim() && attachments.length === 0) || isSendingMessage) && styles.sendButtonDisabled,
-                ]}
-              >
-                <Ionicons 
-                  name="arrow-up" 
-                  size={18} 
-                  color={((!messageInput.trim() && attachments.length === 0) || isSendingMessage) ? colors.text.disabled : '#FFFFFF'} 
-                />
-              </Pressable>
+                hasContent={!!messageInput.trim() || attachments.length > 0}
+              />
             </View>
 
-            {/* Modern Attachment Menu - Slide Up Animation */}
-            {showAttachmentMenu && pod && (
-              <AttachmentMenuAnimated
-                translateY={attachmentMenuTranslateY}
-                opacity={attachmentMenuOpacity}
-                onClose={() => setShowAttachmentMenu(false)}
-                pod={pod}
-                handleOpenInMaps={handleOpenInMaps}
-                handleTakePhoto={handleTakePhoto}
-                handlePickImage={handlePickImage}
-                setShowGifPicker={setShowGifPicker}
-                setShowEmojiPicker={setShowEmojiPicker}
-              />
+            {/* Attachment Menu Dropdown - Compact Above Input */}
+            {showAttachmentMenu && (
+              <>
+                {/* Subtle backdrop - only covers input area */}
+                <Pressable
+                  style={styles.attachmentMenuBackdrop}
+                  onPress={() => setShowAttachmentMenu(false)}
+                />
+                <AnimatedAttachmentMenu
+                  onClose={() => setShowAttachmentMenu(false)}
+                  onPhotoPress={() => {
+                    setShowAttachmentMenu(false);
+                    Alert.alert(
+                      'Add Image',
+                      'Choose an option',
+                      [
+                        { text: 'Camera', onPress: handleTakePhoto },
+                        { text: 'Photo Library', onPress: handlePickImage },
+                        { text: 'Cancel', style: 'cancel' },
+                      ]
+                    );
+                  }}
+                  onGifPress={() => {
+                    setShowAttachmentMenu(false);
+                    setShowGifPicker(true);
+                  }}
+                  onEmojiPress={() => {
+                    setShowAttachmentMenu(false);
+                    setShowEmojiPicker(true);
+                  }}
+                  onLocationPress={pod.location ? handleOpenInMaps : undefined}
+                />
+              </>
             )}
 
             {/* Emoji Picker */}
@@ -1235,9 +1500,24 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.surface,
   },
 
+  backButtonHeader: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: spacing.sm,
+  },
+
+  backButtonHeaderPressed: {
+    opacity: 0.6,
+  },
+
   avatarRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    flex: 1,
+    marginHorizontal: spacing.sm,
   },
 
   miniAvatarContainer: {
@@ -1275,8 +1555,9 @@ const styles = StyleSheet.create({
 
   headerCenter: {
     flex: 1,
-    alignItems: 'center',
-    marginHorizontal: spacing.md,
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    marginRight: spacing.sm,
   },
 
   modernActivity: {
@@ -1646,7 +1927,7 @@ const styles = StyleSheet.create({
   },
 
   emptyChatEmoji: {
-    fontSize: 64,
+    fontSize: 56,
     marginBottom: spacing.lg,
   },
 
@@ -1679,15 +1960,16 @@ const styles = StyleSheet.create({
 
   // @vibe AI Message (centered, purple tint)
   aiMessageContainer: {
-    marginVertical: spacing.md,
-    paddingHorizontal: spacing.lg,
+    marginVertical: spacing.xs + 2,
+    paddingHorizontal: spacing.sm,
     alignItems: 'center', // Center the message
   },
 
   aiMessageBubble: {
     backgroundColor: colors.primary + '10', // Subtle purple tint (10% opacity)
-    borderRadius: borderRadius.xl,
-    padding: spacing.lg,
+    borderRadius: borderRadius.lg,
+    paddingHorizontal: spacing.sm + 2,
+    paddingVertical: spacing.sm,
     maxWidth: '85%',
     alignItems: 'center', // Center content inside bubble
     ...shadows.sm,
@@ -1696,12 +1978,12 @@ const styles = StyleSheet.create({
   aiMessageHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: spacing.sm,
+    marginBottom: spacing.xs,
   },
 
   aiMessageIcon: {
-    fontSize: 18, // Sparkle emoji size
-    marginRight: spacing.xs,
+    fontSize: 16,
+    marginRight: spacing.xs / 2,
   },
 
   aiMessageUsername: {
@@ -1711,27 +1993,40 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
 
+  aiMessageContentRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    flexWrap: 'wrap',
+  },
+
   aiMessageText: {
-    fontSize: 14, // Slightly smaller than human messages (16px)
+    fontSize: 14,
     fontWeight: typography.fontWeight.regular,
     color: colors.text.primary,
-    lineHeight: 14 * 1.5,
-    textAlign: 'center', // Center text
-    fontStyle: 'italic', // Differentiate from human messages
+    lineHeight: 14 * 1.4,
+    textAlign: 'center',
+    fontStyle: 'italic',
+    flexShrink: 1,
   },
 
   aiMessageTime: {
-    fontSize: typography.fontSize.xs,
+    fontSize: 11,
     fontWeight: typography.fontWeight.regular,
-    color: colors.text.tertiary,
-    marginTop: spacing.sm,
+    color: colors.text.disabled,
+    marginLeft: spacing.xs,
+    marginBottom: 1,
   },
 
   messageBubbleContainer: {
-    marginVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
+    marginVertical: 2,
+    paddingHorizontal: spacing.sm,
     flexDirection: 'row',
     width: '100%',
+  },
+
+  messageBubbleGrouped: {
+    marginTop: 1, // Tighter spacing for grouped messages
   },
 
   messageBubbleLeft: {
@@ -1750,8 +2045,9 @@ const styles = StyleSheet.create({
   messageBubble: {
     maxWidth: '75%',
     borderRadius: borderRadius.lg,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm + 2,
+    paddingHorizontal: spacing.sm,
+    paddingTop: spacing.xs + 2,
+    paddingBottom: spacing.xs,
     ...shadows.sm,
   },
 
@@ -1771,14 +2067,23 @@ const styles = StyleSheet.create({
     fontSize: typography.fontSize.xs,
     fontWeight: typography.fontWeight.bold,
     color: colors.text.secondary,
-    marginBottom: spacing.xs,
+    marginBottom: spacing.xs / 2,
+  },
+
+  messageContentRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    flexWrap: 'wrap',
+  },
+
+  messageTextContainer: {
+    flexShrink: 1,
   },
 
   messageText: {
     fontSize: typography.fontSize.md,
     fontWeight: typography.fontWeight.regular,
-    lineHeight: typography.fontSize.md * 1.4,
-    marginBottom: spacing.xs,
+    lineHeight: typography.fontSize.md * 1.3,
   },
 
   messageTextUser: {
@@ -1789,24 +2094,20 @@ const styles = StyleSheet.create({
     color: colors.text.primary,
   },
 
-  messageTimeContainer: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    marginTop: spacing.xs / 2,
-  },
-
-  messageTime: {
-    fontSize: typography.fontSize.xs,
+  messageTimeInline: {
+    fontSize: 11,
     fontWeight: typography.fontWeight.regular,
-    marginTop: spacing.xs / 2,
+    marginLeft: spacing.xs,
+    marginBottom: 1,
+    alignSelf: 'flex-end',
   },
 
   messageTimeUser: {
-    color: 'rgba(255, 255, 255, 0.75)',
+    color: 'rgba(255, 255, 255, 0.6)',
   },
 
   messageTimeOther: {
-    color: colors.text.tertiary,
+    color: colors.text.disabled,
   },
 
   // Mention highlighting
@@ -1821,6 +2122,111 @@ const styles = StyleSheet.create({
   mentionTextVibe: {
     color: colors.primaryLight,
     backgroundColor: colors.primaryLight + '20',
+  },
+
+  // Reply Context (inside message bubble)
+  replyContext: {
+    flexDirection: 'row',
+    marginBottom: spacing.xs,
+    paddingLeft: spacing.xs,
+    paddingBottom: spacing.xs,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.surfaceHover + '40',
+  },
+
+  replyContextPressed: {
+    opacity: 0.6,
+  },
+
+  replyContextBar: {
+    width: 3,
+    backgroundColor: colors.primary,
+    borderRadius: 2,
+    marginRight: spacing.xs,
+  },
+
+  replyContextContent: {
+    flex: 1,
+  },
+
+  replyContextUsername: {
+    fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.bold,
+    color: colors.primary,
+    marginBottom: 2,
+  },
+
+  replyContextText: {
+    fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.regular,
+    color: colors.text.tertiary,
+    fontStyle: 'italic',
+  },
+
+  replyContextTextUser: {
+    color: 'rgba(255, 255, 255, 0.7)',
+  },
+
+  // Reply context styles for AI messages
+  replyContextAi: {
+    borderBottomColor: 'rgba(255, 200, 100, 0.3)',
+  },
+
+  replyContextUsernameAi: {
+    color: 'rgba(255, 150, 50, 0.9)',
+  },
+
+  replyContextTextAi: {
+    color: 'rgba(0, 0, 0, 0.5)',
+  },
+
+  // Reply Indicator (above input)
+  replyIndicatorContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderTopWidth: 1,
+    borderTopColor: colors.surfaceHover,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    gap: spacing.sm,
+  },
+
+  replyIndicatorBar: {
+    width: 3,
+    height: 32,
+    backgroundColor: colors.primary,
+    borderRadius: 2,
+  },
+
+  replyIndicatorContent: {
+    flex: 1,
+  },
+
+  replyIndicatorLabel: {
+    fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.semibold,
+    color: colors.primary,
+    marginBottom: 2,
+  },
+
+  replyIndicatorPreview: {
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.regular,
+    color: colors.text.secondary,
+  },
+
+  replyIndicatorCloseButton: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: colors.surfaceHover,
+  },
+
+  replyIndicatorCloseButtonPressed: {
+    opacity: 0.6,
   },
 
   // Chat Input (Modern)
@@ -1840,48 +2246,69 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: colors.surface,
-    borderRadius: borderRadius.full,
-    paddingLeft: spacing.md,
-    paddingRight: spacing.md,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: colors.surfaceHover,
+    paddingLeft: spacing.xs,
+    paddingRight: spacing.sm,
     minHeight: 44,
   },
 
-  attachButtonIntegrated: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+  attachButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'transparent',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: spacing.xs,
   },
 
-  attachButtonIntegratedPressed: {
+  attachButtonPressed: {
     opacity: 0.6,
-    transform: [{ scale: 0.95 }],
+  },
+
+  attachButtonActive: {
+    backgroundColor: colors.primary + '15',
   },
 
   chatInput: {
     flex: 1,
+    backgroundColor: 'transparent',
+    paddingHorizontal: spacing.sm,
     paddingVertical: spacing.sm + 2,
     fontSize: typography.fontSize.md,
     fontWeight: typography.fontWeight.regular,
     color: colors.text.primary,
     maxHeight: 100,
-    minHeight: 20,
+    minHeight: 36,
   },
 
   sendButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: colors.primary,
     justifyContent: 'center',
     alignItems: 'center',
+    marginLeft: spacing.md,
+    ...shadows.sm,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+
+  sendButtonGlow: {
+    position: 'absolute',
+    top: -10,
+    left: -10,
+    right: -10,
+    bottom: -10,
+    borderRadius: 32,
+    backgroundColor: colors.primary,
   },
 
   sendButtonPressed: {
-    opacity: 0.8,
-    transform: [{ scale: 0.95 }],
+    opacity: 0.9,
   },
 
   sendButtonDisabled: {
@@ -1973,19 +2400,30 @@ const styles = StyleSheet.create({
     lineHeight: 14,
   },
 
+  attachmentMenuBackdrop: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    top: 0,
+    backgroundColor: 'transparent',
+    zIndex: 997,
+  },
+
   attachmentMenuContainer: {
     position: 'absolute',
-    bottom: 80,
+    bottom: 56,
     left: spacing.lg,
-    right: spacing.lg,
     backgroundColor: colors.surface,
-    borderRadius: borderRadius.xl,
-    paddingVertical: spacing.sm,
+    borderRadius: borderRadius.lg,
+    paddingVertical: spacing.xs,
     ...shadows.lg,
     borderWidth: 1,
     borderColor: colors.surfaceHover,
-    zIndex: 1000,
-    elevation: 10,
+    zIndex: 998,
+    elevation: 8,
+    width: 280,
+    alignSelf: 'flex-start',
   },
 
   attachmentMenuItem: {
@@ -1993,17 +2431,23 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.md,
-    gap: spacing.md,
+    gap: spacing.sm,
+    minHeight: 48,
   },
 
   attachmentMenuItemPressed: {
     backgroundColor: colors.surfaceHover,
   },
 
+  attachmentMenuItemBorder: {
+    borderBottomWidth: 1,
+    borderBottomColor: colors.surfaceHover,
+  },
+
   attachmentMenuItemIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: colors.primary + '15',
     justifyContent: 'center',
     alignItems: 'center',
@@ -2011,13 +2455,14 @@ const styles = StyleSheet.create({
 
   attachmentMenuItemContent: {
     flex: 1,
+    marginLeft: spacing.xs,
   },
 
   attachmentMenuItemTitle: {
-    fontSize: typography.fontSize.md,
+    fontSize: typography.fontSize.sm,
     fontWeight: typography.fontWeight.semibold,
     color: colors.text.primary,
-    marginBottom: 2,
+    marginBottom: 1,
   },
 
   attachmentMenuItemSubtitle: {
@@ -2041,14 +2486,14 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.md,
   },
 
-  backdrop: {
+  overlay: {
     position: 'absolute',
     top: 0,
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(10, 10, 15, 0.6)',
-    zIndex: 998,
+    backgroundColor: 'transparent',
+    zIndex: 999,
   },
 
   // Mention Suggestions

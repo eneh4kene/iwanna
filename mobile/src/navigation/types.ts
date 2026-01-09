@@ -8,6 +8,8 @@ export type RootStackParamList = {
   AccountRecovery: undefined;
   MainTabs: undefined;
   PodMatched: { podId: string };
+  PostPodFeedback: { podId: string };
+  FeaturedPodDetail: { featuredPodId: string };
 };
 
 export type MainTabsParamList = {
