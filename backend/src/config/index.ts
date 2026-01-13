@@ -105,6 +105,13 @@ export const openaiConfig = {
 };
 
 /**
+ * Google Places API configuration
+ */
+export const googlePlacesConfig = {
+  apiKey: getEnv('GOOGLE_PLACES_API_KEY', ''),
+};
+
+/**
  * Logging configuration
  */
 export const loggingConfig = {

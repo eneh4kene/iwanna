@@ -478,6 +478,97 @@ EXAMPLES:
   }
 
   /**
+   * Parse tool intent using OpenAI function calling
+   * Determines which @vibe tool to use based on user's natural language query
+   */
+  async parseToolIntent(
+    userQuery: string,
+    functionDefinitions: Array<{ name: string; description: string; parameters: any }>
+  ): Promise<{
+    functionName: string;
+    parameters: Record<string, any>;
+    confidence: number;
+  }> {
+    try {
+      logger.info('[AiChatService] Parsing tool intent', {
+        query: userQuery,
+        availableFunctions: functionDefinitions.map((f) => f.name),
+      });
+
+      const completion = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: `You are @vibe, helping determine what the user wants.
+
+Analyze the user's request and call the appropriate function.
+If the user asks "where" or "find" something, use find_nearby_places.
+If the user asks about meeting point or "where should we meet", use calculate_meeting_point.
+
+Be smart about inferring intent from natural language.`,
+          },
+          {
+            role: 'user',
+            content: userQuery,
+          },
+        ],
+        functions: functionDefinitions,
+        function_call: 'auto',
+        temperature: 0.3, // Lower temperature for more consistent function selection
+      });
+
+      const functionCall = completion.choices[0]?.message?.function_call;
+
+      if (!functionCall) {
+        logger.warn('[AiChatService] No function call in OpenAI response', {
+          query: userQuery,
+        });
+
+        // Return a fallback - treat as unknown
+        return {
+          functionName: 'unknown',
+          parameters: {},
+          confidence: 0.0,
+        };
+      }
+
+      let parameters: Record<string, any> = {};
+      try {
+        parameters = JSON.parse(functionCall.arguments || '{}');
+      } catch (error) {
+        logger.error('[AiChatService] Failed to parse function arguments', {
+          arguments: functionCall.arguments,
+          error,
+        });
+      }
+
+      logger.info('[AiChatService] Tool intent parsed', {
+        functionName: functionCall.name,
+        parameters,
+      });
+
+      return {
+        functionName: functionCall.name,
+        parameters,
+        confidence: 0.8, // OpenAI function calling is pretty reliable
+      };
+    } catch (error) {
+      logger.error('[AiChatService] Error parsing tool intent', {
+        error: error instanceof Error ? error.message : String(error),
+        query: userQuery,
+      });
+
+      // Return fallback
+      return {
+        functionName: 'unknown',
+        parameters: {},
+        confidence: 0.0,
+      };
+    }
+  }
+
+  /**
    * Check if AI service is available
    */
   isAvailable(): boolean {

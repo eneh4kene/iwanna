@@ -1,6 +1,7 @@
 import { query } from './database';
 import { notificationService } from './notificationService';
 import { aiChatService } from './aiChatService';
+import { vibeOrchestrator } from './vibe/vibeOrchestrator';
 import { logger } from '../utils/logger';
 import { AppError } from '../types';
 
@@ -586,9 +587,22 @@ class ChatService {
       const podResult = await query<{
         id: string;
         activity: string;
+        category: string;
         user_ids: string[];
+        location: any;
+        created_at: Date;
+        expires_at: Date;
       }>(
-        `SELECT id, shared_intent->>'activity' as activity, user_ids FROM pods WHERE id = $1`,
+        `SELECT
+          id,
+          shared_intent->>'activity' as activity,
+          shared_intent->>'category' as category,
+          user_ids,
+          location,
+          created_at,
+          expires_at
+        FROM pods
+        WHERE id = $1`,
         [podId]
       );
 
@@ -620,13 +634,100 @@ class ChatService {
         }
       }
 
-      // Generate AI response with reply context
-      const aiResponse = await aiChatService.generateMentionResponse(
-        userMessage + replyContext,
-        username,
-        pod.activity,
-        messageContext
-      );
+      // Extract user ID from the first member (for rate limiting)
+      const userId = pod.user_ids[0];
+      if (!userId) {
+        logger.warn('@vibe mention in pod with no members', { podId });
+        return;
+      }
+
+      // Check if this looks like a tool query (contains keywords like "find", "where", "meet", etc.)
+      const toolKeywords = /\b(find|where|search|locate|meet|midpoint|middle|nearby|close|around)\b/i;
+      const looksLikeToolQuery = toolKeywords.test(userMessage);
+
+      let aiResponse: string;
+
+      if (looksLikeToolQuery) {
+        try {
+          // Get pod location (extract from PostGIS POINT)
+          let podLocation = { latitude: 0, longitude: 0 };
+          if (pod.location) {
+            // Parse PostGIS POINT format: "POINT(lng lat)" or use coordinates
+            const locationStr = typeof pod.location === 'string' ? pod.location : JSON.stringify(pod.location);
+            const pointMatch = locationStr.match(/POINT\(([^\s]+)\s+([^\)]+)\)/);
+            if (pointMatch && pointMatch[1] && pointMatch[2]) {
+              podLocation = {
+                longitude: parseFloat(pointMatch[1]),
+                latitude: parseFloat(pointMatch[2]),
+              };
+            }
+          }
+
+          // Get pod members with their locations
+          const membersResult = await query<{
+            user_id: string;
+            username: string;
+            location: any;
+          }>(
+            `SELECT u.id as user_id, u.username, u.last_location as location
+             FROM users u
+             WHERE u.id = ANY($1)`,
+            [pod.user_ids]
+          );
+
+          const members = membersResult.rows.map(row => ({
+            userId: row.user_id,
+            username: row.username || 'Unknown',
+            location: row.location ? {
+              latitude: row.location.coordinates?.[1] || 0,
+              longitude: row.location.coordinates?.[0] || 0,
+            } : undefined,
+          }));
+
+          // Route through vibe orchestrator
+          const toolResult = await vibeOrchestrator.processVibeQuery(userMessage, {
+            podId,
+            userId,
+            location: podLocation,
+            members,
+            activity: pod.activity || 'unknown',
+            category: pod.category || 'conversation',
+            createdAt: new Date(pod.created_at),
+            expiresAt: new Date(pod.expires_at),
+          });
+
+          // Use the tool's formatted message
+          aiResponse = toolResult.message;
+
+          logger.info('@vibe tool executed successfully', {
+            podId,
+            username,
+            success: toolResult.success,
+            metadata: toolResult.metadata,
+          });
+        } catch (error) {
+          logger.error('Error executing @vibe tool, falling back to conversational AI', {
+            podId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+
+          // Fall back to conversational AI
+          aiResponse = await aiChatService.generateMentionResponse(
+            userMessage + replyContext,
+            username,
+            pod.activity,
+            messageContext
+          );
+        }
+      } else {
+        // Regular conversational query - use AI chat service
+        aiResponse = await aiChatService.generateMentionResponse(
+          userMessage + replyContext,
+          username,
+          pod.activity,
+          messageContext
+        );
+      }
 
       // Send AI response as a reply if the user was replying to @vibe
       await this.sendAiMessage(podId, aiResponse, replyToMessageId);

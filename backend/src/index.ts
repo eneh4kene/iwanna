@@ -13,6 +13,7 @@ import { matchingWorker } from './workers/matchingWorker';
 import { cleanupWorker } from './workers/cleanupWorker';
 import { startVibeWorker, stopVibeWorker } from './workers/vibeWorker';
 import { initializeWebSocket, shutdownWebSocket } from './websocket/socketHandler';
+import { initializeVibeTools, shutdownVibeTools } from './services/vibe/bootstrap';
 import routes from './routes';
 
 /**
@@ -77,6 +78,9 @@ async function startServer(): Promise<void> {
     matchingWorker.start();
     cleanupWorker.start();
     startVibeWorker();
+
+    // Initialize @vibe tools system
+    await initializeVibeTools();
 
     // Register API routes
     app.use(`/api/${serverConfig.apiVersion}`, routes);
@@ -153,6 +157,9 @@ async function startServer(): Promise<void> {
         matchingWorker.stop();
         cleanupWorker.stop();
         stopVibeWorker();
+
+        // Shutdown @vibe tools system
+        shutdownVibeTools();
 
         // Shutdown WebSocket server
         await shutdownWebSocket(io);

@@ -44,7 +44,10 @@
       "Bash(git -C /Users/kene_eneh/iwanna log --oneline -10)",
       "Bash(timeout 5 npm run dev:*)",
       "Bash(npm start)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(docker cp:*)",
+      "Bash(node test-vibe-tools.js:*)"
     ],
     "deny": [],
     "ask": []
